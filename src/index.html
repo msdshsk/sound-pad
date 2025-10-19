@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sound Pad - 音声ファイルランチャー</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <!-- 左側アクティビティバー -->
+    <div class="activity-bar">
+      <button id="drawer-toggle-btn" class="activity-icon" title="履歴・ブックマーク">
+        <i class="mdi mdi-folder-clock"></i>
+      </button>
+      <button id="select-folder-btn" class="activity-icon" title="フォルダを選択">
+        <i class="mdi mdi-folder-open"></i>
+      </button>
+      <button id="bookmark-current-btn" class="activity-icon" disabled title="ブックマークに追加">
+        <i class="mdi mdi-star-plus"></i>
+      </button>
+    </div>
+
+    <main class="container">
+      <header>
+        <h1>Sound Pad</h1>
+        <p class="subtitle">音声ファイルランチャー</p>
+      </header>
+
+      <div class="controls">
+        <div id="current-folder" class="current-folder">フォルダを選択してください</div>
+      </div>
+
+      <div id="audio-grid" class="audio-grid">
+        <p class="placeholder">フォルダを選択して音声ファイルを読み込んでください</p>
+      </div>
+
+      <div class="bottom-controls">
+        <div class="selected-info">
+          <span id="selected-count">選択: 0個</span>
+        </div>
+        <div class="action-buttons">
+          <button id="rename-selected-btn" class="action-btn" disabled title="選択項目の名前を編集">
+            <i class="mdi mdi-pencil"></i>
+            <span>名前を編集</span>
+          </button>
+          <button id="copy-selected-btn" class="action-btn" disabled title="選択項目をコピー">
+            <i class="mdi mdi-content-copy"></i>
+            <span>コピー</span>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- ドロワー -->
+    <div id="drawer" class="drawer">
+      <div class="drawer-content">
+        <div class="drawer-header">
+          <h2>
+            <i class="mdi mdi-folder-clock"></i>
+            履歴・ブックマーク
+          </h2>
+          <button id="drawer-close-btn" class="drawer-close">
+            <i class="mdi mdi-close"></i>
+          </button>
+        </div>
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <h3>
+              <i class="mdi mdi-bookmark-multiple"></i>
+              ブックマーク
+            </h3>
+            <div id="bookmarks-list" class="drawer-list">
+              <p class="empty-message">ブックマークはありません</p>
+            </div>
+          </div>
+          <div class="drawer-section">
+            <h3>
+              <i class="mdi mdi-history"></i>
+              履歴
+            </h3>
+            <div id="history-list" class="drawer-list">
+              <p class="empty-message">履歴はありません</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- コピー完了モーダル -->
+    <div id="copy-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>
+            <i class="mdi mdi-check-circle"></i>
+            コピー完了
+          </h2>
+        </div>
+        <div class="modal-body">
+          <p id="copy-message"></p>
+        </div>
+        <div class="modal-footer">
+          <button id="modal-ok-btn" class="modal-btn primary">OK</button>
+          <button id="modal-open-folder-btn" class="modal-btn secondary">
+            <i class="mdi mdi-folder-open"></i>
+            コピー先を開く
+          </button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
