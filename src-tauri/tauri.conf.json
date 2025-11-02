@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Sound Pad",
   "version": "0.1.0",
-  "identifier": "com.msdsh.tauri-app",
+  "identifier": "com.msdsh.sound-pad",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,9 +10,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Sound Pad - 音声ファイルランチャー",
+        "width": 900,
+        "height": 700
       }
     ],
     "security": {

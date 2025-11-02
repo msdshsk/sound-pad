@@ -1,8 +1,8 @@
 [package]
-name = "tauri-app"
+name = "sound-pad"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Sound Pad - 音声ファイルランチャー"
+authors = ["msdsh"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "tauri_app_lib"
+name = "sound_pad_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -26,4 +26,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rodio = "0.19"
 walkdir = "2"
+symphonia = { version = "0.5", features = ["mp3", "wav", "flac", "vorbis", "aac", "isomp4"] }
 

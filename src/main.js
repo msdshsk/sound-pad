@@ -7,6 +7,9 @@ let selectedFiles = new Set();
 let currentPlayingPath = null;
 let currentFolder = null;
 let lastCopiedDestination = null;
+let searchQuery = "";
+let favoriteFiles = new Set();
+let isListView = false;
 
 // LocalStorage キー
 const HISTORY_KEY = "sound-pad-history";
@@ -25,6 +28,58 @@ function truncateFolderName(name, maxLength = 20) {
     return name;
   }
   return name.substring(0, maxLength) + '...';
+}
+
+// 秒数をMM:SS形式に変換
+function formatDuration(seconds) {
+  if (!seconds || seconds < 0) {
+    return "--:--";
+  }
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+// 検索クエリをマッチングパターンに変換
+function createSearchMatcher(query) {
+  if (!query) {
+    return () => true;
+  }
+
+  // 正規表現パターン: /pattern/ または /pattern/flags
+  const regexMatch = query.match(/^\/(.+?)\/([gimuy]*)$/);
+  if (regexMatch) {
+    try {
+      const pattern = regexMatch[1];
+      const flags = regexMatch[2] || 'i';
+      const regex = new RegExp(pattern, flags);
+      return (text) => regex.test(text);
+    } catch (e) {
+      console.error('Invalid regex:', e);
+      // 正規表現が無効な場合は部分一致にフォールバック
+      return (text) => text.toLowerCase().includes(query.toLowerCase());
+    }
+  }
+
+  // ワイルドカードパターン: *.mp3, test*.wav など
+  if (query.includes('*') || query.includes('?')) {
+    // ワイルドカードを正規表現に変換
+    const regexPattern = query
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&') // 特殊文字をエスケープ
+      .replace(/\*/g, '.*')  // * を .* に変換
+      .replace(/\?/g, '.');  // ? を . に変換
+    try {
+      const regex = new RegExp(`^${regexPattern}$`, 'i');
+      return (text) => regex.test(text);
+    } catch (e) {
+      console.error('Invalid wildcard pattern:', e);
+      return (text) => text.toLowerCase().includes(query.toLowerCase());
+    }
+  }
+
+  // 通常の部分一致検索（大文字小文字を区別しない）
+  const lowerQuery = query.toLowerCase();
+  return (text) => text.toLowerCase().includes(lowerQuery);
 }
 
 // 履歴を取得
@@ -80,6 +135,97 @@ function removeBookmark(path) {
   bookmarks = bookmarks.filter(p => p !== path);
   saveBookmarks(bookmarks);
   renderBookmarks();
+}
+
+// お気に入りファイルを取得
+async function getFavoriteFiles() {
+  try {
+    const favorites = await invoke("get_favorites");
+    favoriteFiles = new Set(favorites);
+    renderFavorites();
+  } catch (error) {
+    console.error("Error loading favorites:", error);
+  }
+}
+
+// お気に入りファイルを追加
+async function addFavorite(filePath) {
+  try {
+    await invoke("add_favorite", { filePath });
+    favoriteFiles.add(filePath);
+    renderAudioFiles();
+    renderFavorites();
+  } catch (error) {
+    console.error("Error adding favorite:", error);
+    alert("お気に入りの追加中にエラーが発生しました: " + error);
+  }
+}
+
+// お気に入りファイルを削除
+async function removeFavorite(filePath) {
+  try {
+    await invoke("remove_favorite", { filePath });
+    favoriteFiles.delete(filePath);
+    renderAudioFiles();
+    renderFavorites();
+  } catch (error) {
+    console.error("Error removing favorite:", error);
+    alert("お気に入りの削除中にエラーが発生しました: " + error);
+  }
+}
+
+// お気に入り一覧を表示
+function renderFavorites() {
+  const container = document.getElementById("favorites-list");
+
+  if (favoriteFiles.size === 0) {
+    container.innerHTML = '<p class="empty-message">お気に入りはありません</p>';
+    return;
+  }
+
+  container.innerHTML = "";
+  favoriteFiles.forEach(filePath => {
+    const item = document.createElement("div");
+    item.className = "favorite-item";
+
+    const fileName = filePath.split(/[\\/]/).pop();
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "favorite-name";
+    nameSpan.textContent = fileName;
+    nameSpan.title = filePath;
+
+    const playBtn = document.createElement("button");
+    playBtn.className = "favorite-play-btn";
+    playBtn.innerHTML = '<i class="mdi mdi-play"></i>';
+    playBtn.title = "再生";
+    playBtn.addEventListener("click", async () => {
+      if (playBtn.disabled) return;
+      try {
+        playBtn.disabled = true;
+        await invoke("play_audio", { path: filePath });
+        currentPlayingPath = filePath;
+      } catch (error) {
+        console.error("Error playing favorite:", error);
+        alert("ファイルが見つかりません: " + filePath);
+      } finally {
+        playBtn.disabled = false;
+      }
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "favorite-remove-btn";
+    removeBtn.innerHTML = '<i class="mdi mdi-star-off"></i>';
+    removeBtn.title = "お気に入りから削除";
+    removeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeFavorite(filePath);
+    });
+
+    item.appendChild(nameSpan);
+    item.appendChild(playBtn);
+    item.appendChild(removeBtn);
+    container.appendChild(item);
+  });
 }
 
 // 履歴を表示
@@ -203,14 +349,30 @@ async function loadAudioFiles(directory) {
 function renderAudioFiles() {
   const grid = document.getElementById("audio-grid");
 
+  // ビュー切り替え
+  if (isListView) {
+    grid.classList.add("list-view");
+  } else {
+    grid.classList.remove("list-view");
+  }
+
   if (audioFiles.length === 0) {
     grid.innerHTML = '<p class="placeholder">このフォルダには音声ファイルがありません</p>';
     return;
   }
 
+  // 検索クエリでフィルタリング（正規表現/ワイルドカード対応）
+  const matcher = createSearchMatcher(searchQuery);
+  const filteredFiles = audioFiles.filter(file => matcher(file.name));
+
+  if (filteredFiles.length === 0) {
+    grid.innerHTML = '<p class="placeholder">検索条件に一致するファイルがありません</p>';
+    return;
+  }
+
   grid.innerHTML = "";
 
-  audioFiles.forEach((file, index) => {
+  filteredFiles.forEach((file, index) => {
     const item = document.createElement("div");
     item.className = "audio-item";
     item.dataset.index = index;
@@ -232,6 +394,21 @@ function renderAudioFiles() {
         item.classList.remove("selected");
       }
       updateSelectedCount();
+    });
+
+    const favoriteBtn = document.createElement("button");
+    favoriteBtn.className = "favorite-btn";
+    const isFavorite = favoriteFiles.has(file.path);
+    favoriteBtn.innerHTML = isFavorite
+      ? '<i class="mdi mdi-star"></i>'
+      : '<i class="mdi mdi-star-outline"></i>';
+    favoriteBtn.title = isFavorite ? "お気に入りから削除" : "お気に入りに追加";
+    favoriteBtn.addEventListener("click", () => {
+      if (favoriteFiles.has(file.path)) {
+        removeFavorite(file.path);
+      } else {
+        addFavorite(file.path);
+      }
     });
 
     const nameInput = document.createElement("input");
@@ -256,7 +433,13 @@ function renderAudioFiles() {
     });
 
     header.appendChild(checkbox);
+    header.appendChild(favoriteBtn);
     header.appendChild(nameInput);
+
+    // 音声の長さを表示
+    const durationDiv = document.createElement("div");
+    durationDiv.className = "audio-duration";
+    durationDiv.textContent = formatDuration(file.duration_seconds);
 
     const playBtn = document.createElement("button");
     playBtn.className = "play-btn";
@@ -264,6 +447,7 @@ function renderAudioFiles() {
     playBtn.addEventListener("click", () => togglePlayAudio(file.path, item, playBtn));
 
     item.appendChild(header);
+    item.appendChild(durationDiv);
     item.appendChild(playBtn);
     grid.appendChild(item);
 
@@ -277,7 +461,15 @@ function renderAudioFiles() {
 
 // 音声の再生/停止を切り替え
 async function togglePlayAudio(path, itemElement, buttonElement) {
+  // ボタンが既に無効化されている場合は何もしない（連打防止）
+  if (buttonElement.disabled) {
+    return;
+  }
+
   try {
+    // ボタンを一時的に無効化（連打防止）
+    buttonElement.disabled = true;
+
     // 既に再生中の同じファイルをクリックした場合は停止
     if (currentPlayingPath === path) {
       await invoke("stop_audio");
@@ -290,13 +482,21 @@ async function togglePlayAudio(path, itemElement, buttonElement) {
 
     // 前回再生中の要素をリセット
     if (currentPlayingPath) {
-      const prevItem = document.querySelector(`[data-path="${currentPlayingPath}"]`);
+      const allItems = document.querySelectorAll('.audio-item[data-path]');
+      let prevItem = null;
+      for (const el of allItems) {
+        if (el.dataset.path === currentPlayingPath) {
+          prevItem = el;
+          break;
+        }
+      }
       if (prevItem) {
         prevItem.classList.remove("playing");
         const prevButton = prevItem.querySelector(".play-btn");
         if (prevButton) {
           prevButton.innerHTML = '<i class="mdi mdi-play"></i> 再生';
           prevButton.classList.remove("stopping");
+          prevButton.disabled = false; // 前のボタンを再度有効化
         }
       }
     }
@@ -312,6 +512,9 @@ async function togglePlayAudio(path, itemElement, buttonElement) {
   } catch (error) {
     console.error("Error playing audio:", error);
     alert("音声の再生中にエラーが発生しました: " + error);
+  } finally {
+    // ボタンを再度有効化
+    buttonElement.disabled = false;
   }
 }
 
@@ -455,6 +658,55 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("modal-ok-btn").addEventListener("click", closeModal);
   document.getElementById("modal-open-folder-btn").addEventListener("click", openCopiedFolder);
 
+  // 検索フィルタのイベントリスナー
+  const searchInput = document.getElementById("search-input");
+  const clearSearchBtn = document.getElementById("clear-search-btn");
+
+  searchInput.addEventListener("input", (e) => {
+    searchQuery = e.target.value.trim();
+    renderAudioFiles();
+
+    // クリアボタンの表示切り替え
+    if (searchQuery) {
+      clearSearchBtn.classList.add("show");
+    } else {
+      clearSearchBtn.classList.remove("show");
+    }
+  });
+
+  clearSearchBtn.addEventListener("click", () => {
+    searchInput.value = "";
+    searchQuery = "";
+    clearSearchBtn.classList.remove("show");
+    renderAudioFiles();
+  });
+
+  // ビュー切り替え
+  const gridViewBtn = document.getElementById("grid-view-btn");
+  const listViewBtn = document.getElementById("list-view-btn");
+
+  gridViewBtn.addEventListener("click", () => {
+    isListView = false;
+    gridViewBtn.classList.add("active");
+    listViewBtn.classList.remove("active");
+    renderAudioFiles();
+  });
+
+  listViewBtn.addEventListener("click", () => {
+    isListView = true;
+    listViewBtn.classList.add("active");
+    gridViewBtn.classList.remove("active");
+    renderAudioFiles();
+  });
+
+  // Ctrl+Fで検索ボックスにフォーカス
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.key === "f") {
+      e.preventDefault();
+      searchInput.focus();
+    }
+  });
+
   // ドロワーの開閉
   document.getElementById("drawer-toggle-btn").addEventListener("click", openDrawer);
   document.getElementById("drawer-close-btn").addEventListener("click", closeDrawer);
@@ -476,6 +728,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // 初期表示
   renderHistory();
   renderBookmarks();
+  getFavoriteFiles();
 
   // 音声再生終了イベントをリッスン
   listen("audio-finished", (event) => {

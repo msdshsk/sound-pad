@@ -24,13 +24,23 @@
     </div>
 
     <main class="container">
-      <header>
-        <h1>Sound Pad</h1>
-        <p class="subtitle">音声ファイルランチャー</p>
-      </header>
-
       <div class="controls">
         <div id="current-folder" class="current-folder">フォルダを選択してください</div>
+        <div class="search-box">
+          <i class="mdi mdi-magnify"></i>
+          <input type="text" id="search-input" placeholder="ファイル名で検索（正規表現: /pattern/、ワイルドカード: *.mp3）" />
+          <button id="clear-search-btn" class="clear-search" title="クリア">
+            <i class="mdi mdi-close"></i>
+          </button>
+        </div>
+        <div class="view-toggle">
+          <button id="grid-view-btn" class="view-btn active" title="グリッドビュー">
+            <i class="mdi mdi-view-grid"></i>
+          </button>
+          <button id="list-view-btn" class="view-btn" title="リストビュー">
+            <i class="mdi mdi-view-list"></i>
+          </button>
+        </div>
       </div>
 
       <div id="audio-grid" class="audio-grid">
@@ -69,6 +79,15 @@
         <div class="drawer-body">
           <div class="drawer-section">
             <h3>
+              <i class="mdi mdi-star"></i>
+              お気に入り
+            </h3>
+            <div id="favorites-list" class="drawer-list">
+              <p class="empty-message">お気に入りはありません</p>
+            </div>
+          </div>
+          <div class="drawer-section">
+            <h3>
               <i class="mdi mdi-bookmark-multiple"></i>
               ブックマーク
             </h3>
@@ -83,6 +102,15 @@
             </h3>
             <div id="history-list" class="drawer-list">
               <p class="empty-message">履歴はありません</p>
+            </div>
+          </div>
+          <div class="drawer-footer">
+            <div class="app-info">
+              <i class="mdi mdi-help-circle"></i>
+              <div class="app-info-text">
+                <strong>Sound Pad</strong>
+                <span>v0.1.0</span>
+              </div>
             </div>
           </div>
         </div>
