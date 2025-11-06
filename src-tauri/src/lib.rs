@@ -1,4 +1,4 @@
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
@@ -23,7 +23,7 @@ pub struct AudioFile {
 #[derive(Clone)]
 pub struct AudioPlayer {
     sink: Arc<Mutex<Option<Sink>>>,
-    _stream: Arc<Mutex<Option<(OutputStream, OutputStreamHandle)>>>,
+    _stream: Arc<Mutex<Option<OutputStream>>>,
     current_path: Arc<Mutex<Option<String>>>,
 }
 
@@ -56,14 +56,14 @@ impl AudioPlayer {
             format!("デコーダーエラー: {}", e)
         })?;
 
-        let (stream, stream_handle) = OutputStream::try_default().map_err(|e| e.to_string())?;
-        let sink = Sink::try_new(&stream_handle).map_err(|e| e.to_string())?;
+        let stream = OutputStreamBuilder::open_default_stream().map_err(|e| e.to_string())?;
+        let sink = Sink::connect_new(stream.mixer());
 
         sink.append(source);
         sink.play();
 
         *self.sink.lock().unwrap() = Some(sink);
-        *self._stream.lock().unwrap() = Some((stream, stream_handle));
+        *self._stream.lock().unwrap() = Some(stream);
 
         Ok(())
     }
