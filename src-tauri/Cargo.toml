@@ -1,6 +1,6 @@
 [package]
 name = "sound-pad"
-version = "0.1.0"
+version = "0.2.0"
 description = "Sound Pad - 音声ファイルランチャー"
 authors = ["msdsh"]
 edition = "2021"

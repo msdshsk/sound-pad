@@ -1,11 +1,11 @@
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufReader, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -25,6 +25,11 @@ pub struct AudioPlayer {
     sink: Arc<Mutex<Option<Sink>>>,
     _stream: Arc<Mutex<Option<OutputStream>>>,
     current_path: Arc<Mutex<Option<String>>>,
+    current_duration: Arc<Mutex<Option<f64>>>,
+    start_time: Arc<Mutex<Option<Instant>>>,
+    start_position: Arc<Mutex<f64>>,
+    is_paused: Arc<Mutex<bool>>,
+    paused_position: Arc<Mutex<f64>>,
 }
 
 // Safe because all fields are protected by Mutex
@@ -37,10 +42,15 @@ impl AudioPlayer {
             sink: Arc::new(Mutex::new(None)),
             _stream: Arc::new(Mutex::new(None)),
             current_path: Arc::new(Mutex::new(None)),
+            current_duration: Arc::new(Mutex::new(None)),
+            start_time: Arc::new(Mutex::new(None)),
+            start_position: Arc::new(Mutex::new(0.0)),
+            is_paused: Arc::new(Mutex::new(false)),
+            paused_position: Arc::new(Mutex::new(0.0)),
         }
     }
 
-    pub fn play(&self, path: &str) -> Result<(), String> {
+    pub fn play(&self, path: &str, skip_seconds: Option<f64>) -> Result<(), String> {
         // 前の再生を停止
         self.stop();
 
@@ -50,8 +60,9 @@ impl AudioPlayer {
         // ファイルを開く（リトライ機能付き）
         let file = self.open_file_with_retry(path, 3)?;
 
-        // BufReaderを使わず、直接Fileを渡す（FileはRead + Seekを実装している）
-        let source = Decoder::new(file).map_err(|e| {
+        // BufReaderを使用
+        let reader = BufReader::new(file);
+        let source = Decoder::new(reader).map_err(|e| {
             eprintln!("デコーダーエラー ({}): {}", path, e);
             format!("デコーダーエラー: {}", e)
         })?;
@@ -59,11 +70,23 @@ impl AudioPlayer {
         let stream = OutputStreamBuilder::open_default_stream().map_err(|e| e.to_string())?;
         let sink = Sink::connect_new(stream.mixer());
 
-        sink.append(source);
+        // スキップが指定されている場合
+        let skip_duration = skip_seconds.unwrap_or(0.0);
+        if skip_duration > 0.0 {
+            let skipped_source = source.skip_duration(Duration::from_secs_f64(skip_duration));
+            sink.append(skipped_source);
+        } else {
+            sink.append(source);
+        }
+
         sink.play();
 
         *self.sink.lock().unwrap() = Some(sink);
         *self._stream.lock().unwrap() = Some(stream);
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_position.lock().unwrap() = skip_duration;
+        *self.is_paused.lock().unwrap() = false;
+        *self.paused_position.lock().unwrap() = 0.0;
 
         Ok(())
     }
@@ -90,6 +113,45 @@ impl AudioPlayer {
         }
         *self._stream.lock().unwrap() = None;
         *self.current_path.lock().unwrap() = None;
+        *self.current_duration.lock().unwrap() = None;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_position.lock().unwrap() = 0.0;
+        *self.is_paused.lock().unwrap() = false;
+        *self.paused_position.lock().unwrap() = 0.0;
+    }
+
+    pub fn pause(&self) {
+        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+            sink.pause();
+            // 現在の位置を保存
+            let current_pos = self.get_current_position();
+            *self.paused_position.lock().unwrap() = current_pos;
+            *self.is_paused.lock().unwrap() = true;
+        }
+    }
+
+    pub fn resume(&self) {
+        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+            sink.play();
+            // 開始時刻を更新（一時停止からの再開）
+            *self.start_time.lock().unwrap() = Some(Instant::now());
+            *self.start_position.lock().unwrap() = *self.paused_position.lock().unwrap();
+            *self.is_paused.lock().unwrap() = false;
+        }
+    }
+
+    pub fn get_current_position(&self) -> f64 {
+        let is_paused = *self.is_paused.lock().unwrap();
+        if is_paused {
+            return *self.paused_position.lock().unwrap();
+        }
+
+        if let Some(start) = *self.start_time.lock().unwrap() {
+            let elapsed = start.elapsed().as_secs_f64();
+            let start_pos = *self.start_position.lock().unwrap();
+            return start_pos + elapsed;
+        }
+        0.0
     }
 
     pub fn get_current_path(&self) -> Option<String> {
@@ -97,11 +159,19 @@ impl AudioPlayer {
     }
 
     pub fn is_playing(&self) -> bool {
+        let is_paused = *self.is_paused.lock().unwrap();
+        if is_paused {
+            return false;
+        }
         if let Some(sink) = self.sink.lock().unwrap().as_ref() {
             !sink.empty()
         } else {
             false
         }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        *self.is_paused.lock().unwrap()
     }
 }
 
@@ -185,10 +255,14 @@ fn get_audio_files(directory: String) -> Result<Vec<AudioFile>, String> {
 
 #[tauri::command]
 fn play_audio(path: String, state: tauri::State<AudioPlayer>, app: tauri::AppHandle) -> Result<(), String> {
-    state.inner().play(&path)?;
+    // 音声の長さを取得
+    let duration = get_audio_duration(Path::new(&path));
 
-    // 現在のパスを保存
+    state.inner().play(&path, None)?;
+
+    // 現在のパスと長さを保存
     *state.inner().current_path.lock().unwrap() = Some(path.clone());
+    *state.inner().current_duration.lock().unwrap() = duration;
 
     // バックグラウンドスレッドで再生終了を監視
     let player = state.inner().clone();
@@ -216,6 +290,7 @@ fn play_audio(path: String, state: tauri::State<AudioPlayer>, app: tauri::AppHan
                 if current.as_deref() == Some(&file_path) {
                     let _ = app_handle.emit("audio-finished", file_path.clone());
                     *player.current_path.lock().unwrap() = None;
+                    *player.current_duration.lock().unwrap() = None;
                 }
                 break;
             }
@@ -229,6 +304,86 @@ fn play_audio(path: String, state: tauri::State<AudioPlayer>, app: tauri::AppHan
 fn stop_audio(state: tauri::State<AudioPlayer>) -> Result<(), String> {
     state.inner().stop();
     Ok(())
+}
+
+#[tauri::command]
+fn pause_audio(state: tauri::State<AudioPlayer>) -> Result<(), String> {
+    state.inner().pause();
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_audio(state: tauri::State<AudioPlayer>) -> Result<(), String> {
+    state.inner().resume();
+    Ok(())
+}
+
+#[tauri::command]
+fn seek_audio(path: String, position: f64, state: tauri::State<AudioPlayer>, app: tauri::AppHandle) -> Result<(), String> {
+    // 音声の長さを取得
+    let duration = get_audio_duration(Path::new(&path));
+
+    // 指定位置から再生開始
+    state.inner().play(&path, Some(position))?;
+
+    // 現在のパスと長さを保存
+    *state.inner().current_path.lock().unwrap() = Some(path.clone());
+    *state.inner().current_duration.lock().unwrap() = duration;
+
+    // バックグラウンドスレッドで再生終了を監視
+    let player = state.inner().clone();
+    let app_handle = app.clone();
+    let file_path = path.clone();
+
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_millis(100));
+
+            let is_empty = {
+                if let Some(sink) = player.sink.lock().unwrap().as_ref() {
+                    sink.empty()
+                } else {
+                    true
+                }
+            };
+
+            if is_empty {
+                let current = player.current_path.lock().unwrap().clone();
+
+                if current.as_deref() == Some(&file_path) {
+                    let _ = app_handle.emit("audio-finished", file_path.clone());
+                    *player.current_path.lock().unwrap() = None;
+                    *player.current_duration.lock().unwrap() = None;
+                }
+                break;
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PlaybackStatus {
+    position: f64,
+    duration: Option<f64>,
+    is_playing: bool,
+    is_paused: bool,
+}
+
+#[tauri::command]
+fn get_playback_status(state: tauri::State<AudioPlayer>) -> Result<PlaybackStatus, String> {
+    let position = state.inner().get_current_position();
+    let duration = state.inner().current_duration.lock().unwrap().clone();
+    let is_playing = state.inner().is_playing();
+    let is_paused = state.inner().is_paused();
+
+    Ok(PlaybackStatus {
+        position,
+        duration,
+        is_playing,
+        is_paused,
+    })
 }
 
 #[tauri::command]
@@ -276,14 +431,33 @@ fn get_favorites_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir.join("favorites.json"))
 }
 
+// 新しいお気に入りアイテムの構造体（タグ対応）
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct Favorites {
+pub struct FavoriteItem {
+    pub file_path: String,
+    pub tags: Vec<String>,
+    pub added_at: String,
+}
+
+// 新しいお気に入り構造体
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct FavoritesV2 {
+    version: u32,
+    items: Vec<FavoriteItem>,
+}
+
+// 旧形式のお気に入り構造体（後方互換性用）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct FavoritesV1 {
     files: Vec<String>,
 }
 
-impl Favorites {
+impl FavoritesV2 {
     fn new() -> Self {
-        Self { files: Vec::new() }
+        Self {
+            version: 2,
+            items: Vec::new(),
+        }
     }
 
     fn load(path: &Path) -> Result<Self, String> {
@@ -292,7 +466,32 @@ impl Favorites {
         }
 
         let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+
+        // まずV2形式として読み込みを試みる
+        if let Ok(v2) = serde_json::from_str::<FavoritesV2>(&content) {
+            if v2.version >= 2 {
+                return Ok(v2);
+            }
+        }
+
+        // V1形式として読み込み、V2に変換
+        if let Ok(v1) = serde_json::from_str::<FavoritesV1>(&content) {
+            let now = chrono_now();
+            let items: Vec<FavoriteItem> = v1.files.into_iter().map(|file_path| {
+                FavoriteItem {
+                    file_path,
+                    tags: Vec::new(),
+                    added_at: now.clone(),
+                }
+            }).collect();
+            return Ok(FavoritesV2 {
+                version: 2,
+                items,
+            });
+        }
+
+        // どちらの形式でも読み込めない場合は新規作成
+        Ok(Self::new())
     }
 
     fn save(&self, path: &Path) -> Result<(), String> {
@@ -304,20 +503,36 @@ impl Favorites {
     }
 }
 
-#[tauri::command]
-fn get_favorites(app: AppHandle) -> Result<Vec<String>, String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let favorites = Favorites::load(&favorites_path)?;
-    Ok(favorites.files)
+// 現在時刻を取得（ISO 8601形式）
+fn chrono_now() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // 簡易的なタイムスタンプ（Unix時間）
+    format!("{}", now)
 }
 
 #[tauri::command]
-fn add_favorite(file_path: String, app: AppHandle) -> Result<(), String> {
+fn get_favorites(app: AppHandle) -> Result<Vec<FavoriteItem>, String> {
     let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = Favorites::load(&favorites_path)?;
+    let favorites = FavoritesV2::load(&favorites_path)?;
+    Ok(favorites.items)
+}
 
-    if !favorites.files.contains(&file_path) {
-        favorites.files.push(file_path);
+#[tauri::command]
+fn add_favorite(file_path: String, tags: Option<Vec<String>>, app: AppHandle) -> Result<(), String> {
+    let favorites_path = get_favorites_file_path(&app)?;
+    let mut favorites = FavoritesV2::load(&favorites_path)?;
+
+    // 既に存在するか確認
+    if !favorites.items.iter().any(|item| item.file_path == file_path) {
+        favorites.items.push(FavoriteItem {
+            file_path,
+            tags: tags.unwrap_or_default(),
+            added_at: chrono_now(),
+        });
         favorites.save(&favorites_path)?;
     }
 
@@ -327,10 +542,88 @@ fn add_favorite(file_path: String, app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn remove_favorite(file_path: String, app: AppHandle) -> Result<(), String> {
     let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = Favorites::load(&favorites_path)?;
+    let mut favorites = FavoritesV2::load(&favorites_path)?;
 
-    favorites.files.retain(|f| f != &file_path);
+    favorites.items.retain(|item| item.file_path != file_path);
     favorites.save(&favorites_path)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn update_favorite_tags(file_path: String, tags: Vec<String>, app: AppHandle) -> Result<(), String> {
+    let favorites_path = get_favorites_file_path(&app)?;
+    let mut favorites = FavoritesV2::load(&favorites_path)?;
+
+    if let Some(item) = favorites.items.iter_mut().find(|item| item.file_path == file_path) {
+        item.tags = tags;
+        favorites.save(&favorites_path)?;
+    } else {
+        return Err("Favorite not found".to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_all_tags(app: AppHandle) -> Result<Vec<String>, String> {
+    let favorites_path = get_favorites_file_path(&app)?;
+    let favorites = FavoritesV2::load(&favorites_path)?;
+
+    let mut all_tags: Vec<String> = favorites.items
+        .iter()
+        .flat_map(|item| item.tags.clone())
+        .collect();
+
+    all_tags.sort();
+    all_tags.dedup();
+
+    Ok(all_tags)
+}
+
+#[tauri::command]
+fn open_in_explorer(path: String) -> Result<(), String> {
+    let path_obj = Path::new(&path);
+
+    // パスがファイルの場合は親ディレクトリを開いてファイルを選択
+    // パスがディレクトリの場合はそのディレクトリを開く
+    #[cfg(target_os = "windows")]
+    {
+        if path_obj.is_file() {
+            // ファイルを選択状態で開く
+            std::process::Command::new("explorer")
+                .args(["/select,", &path])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        } else {
+            // ディレクトリを開く
+            std::process::Command::new("explorer")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let dir = if path_obj.is_file() {
+            path_obj.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or(path.clone())
+        } else {
+            path.clone()
+        };
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
@@ -346,11 +639,18 @@ pub fn run() {
             get_audio_files,
             play_audio,
             stop_audio,
+            pause_audio,
+            resume_audio,
+            seek_audio,
+            get_playback_status,
             rename_file,
             copy_files,
             get_favorites,
             add_favorite,
-            remove_favorite
+            remove_favorite,
+            update_favorite_tags,
+            get_all_tags,
+            open_in_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,11 +5,21 @@ const { listen } = window.__TAURI__.event;
 let audioFiles = [];
 let selectedFiles = new Set();
 let currentPlayingPath = null;
+let currentPlayingDuration = null;
+let lastPlayedPath = null; // 最後に再生したファイルのパス（停止後も保持）
+let lastPlayedDuration = null; // 最後に再生したファイルの長さ
 let currentFolder = null;
 let lastCopiedDestination = null;
 let searchQuery = "";
-let favoriteFiles = new Set();
+let tagFilter = ""; // タグフィルター（空文字=すべて、__favorites__=お気に入りのみ、それ以外=タグ名）
+let favoriteFiles = new Map(); // Map<filePath, FavoriteItem>
 let isListView = false;
+let playbackUpdateInterval = null;
+let allTags = [];
+let editingTagsFilePath = null;
+let editingTags = [];
+let selectedFavorites = new Set(); // お気に入り画面での選択状態
+let bulkTags = []; // 一括付与するタグ
 
 // LocalStorage キー
 const HISTORY_KEY = "sound-pad-history";
@@ -141,20 +151,29 @@ function removeBookmark(path) {
 async function getFavoriteFiles() {
   try {
     const favorites = await invoke("get_favorites");
-    favoriteFiles = new Set(favorites);
-    renderFavorites();
+    favoriteFiles = new Map();
+    favorites.forEach(item => {
+      favoriteFiles.set(item.file_path, item);
+    });
+    // タグ一覧も取得
+    allTags = await invoke("get_all_tags");
+    // メイン画面のタグフィルターも更新
+    updateMainTagFilterOptions();
   } catch (error) {
     console.error("Error loading favorites:", error);
   }
 }
 
 // お気に入りファイルを追加
-async function addFavorite(filePath) {
+async function addFavorite(filePath, tags = []) {
   try {
-    await invoke("add_favorite", { filePath });
-    favoriteFiles.add(filePath);
+    await invoke("add_favorite", { filePath, tags });
+    favoriteFiles.set(filePath, {
+      file_path: filePath,
+      tags: tags,
+      added_at: Date.now().toString()
+    });
     renderAudioFiles();
-    renderFavorites();
   } catch (error) {
     console.error("Error adding favorite:", error);
     alert("お気に入りの追加中にエラーが発生しました: " + error);
@@ -167,65 +186,28 @@ async function removeFavorite(filePath) {
     await invoke("remove_favorite", { filePath });
     favoriteFiles.delete(filePath);
     renderAudioFiles();
-    renderFavorites();
+    renderFavoritesList();
   } catch (error) {
     console.error("Error removing favorite:", error);
     alert("お気に入りの削除中にエラーが発生しました: " + error);
   }
 }
 
-// お気に入り一覧を表示
-function renderFavorites() {
-  const container = document.getElementById("favorites-list");
-
-  if (favoriteFiles.size === 0) {
-    container.innerHTML = '<p class="empty-message">お気に入りはありません</p>';
-    return;
+// タグを更新
+async function updateFavoriteTags(filePath, tags) {
+  try {
+    await invoke("update_favorite_tags", { filePath, tags });
+    const item = favoriteFiles.get(filePath);
+    if (item) {
+      item.tags = tags;
+    }
+    allTags = await invoke("get_all_tags");
+    renderFavoritesList();
+    updateTagFilterOptions();
+  } catch (error) {
+    console.error("Error updating tags:", error);
+    alert("タグの更新中にエラーが発生しました: " + error);
   }
-
-  container.innerHTML = "";
-  favoriteFiles.forEach(filePath => {
-    const item = document.createElement("div");
-    item.className = "favorite-item";
-
-    const fileName = filePath.split(/[\\/]/).pop();
-    const nameSpan = document.createElement("span");
-    nameSpan.className = "favorite-name";
-    nameSpan.textContent = fileName;
-    nameSpan.title = filePath;
-
-    const playBtn = document.createElement("button");
-    playBtn.className = "favorite-play-btn";
-    playBtn.innerHTML = '<i class="mdi mdi-play"></i>';
-    playBtn.title = "再生";
-    playBtn.addEventListener("click", async () => {
-      if (playBtn.disabled) return;
-      try {
-        playBtn.disabled = true;
-        await invoke("play_audio", { path: filePath });
-        currentPlayingPath = filePath;
-      } catch (error) {
-        console.error("Error playing favorite:", error);
-        alert("ファイルが見つかりません: " + filePath);
-      } finally {
-        playBtn.disabled = false;
-      }
-    });
-
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "favorite-remove-btn";
-    removeBtn.innerHTML = '<i class="mdi mdi-star-off"></i>';
-    removeBtn.title = "お気に入りから削除";
-    removeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      removeFavorite(filePath);
-    });
-
-    item.appendChild(nameSpan);
-    item.appendChild(playBtn);
-    item.appendChild(removeBtn);
-    container.appendChild(item);
-  });
 }
 
 // 履歴を表示
@@ -303,8 +285,19 @@ function renderBookmarks() {
 // フォルダを開く
 async function openFolder(path) {
   currentFolder = path;
-  document.getElementById("current-folder").textContent = path;
+  const folderEl = document.getElementById("current-folder");
+  folderEl.textContent = path;
+  folderEl.dataset.fullpath = path; // ツールチップ用のフルパス
   document.getElementById("bookmark-current-btn").disabled = false;
+
+  // テキストが省略されているかチェックしてツールチップを表示
+  requestAnimationFrame(() => {
+    if (folderEl.scrollWidth > folderEl.clientWidth) {
+      folderEl.classList.add("truncated");
+    } else {
+      folderEl.classList.remove("truncated");
+    }
+  });
 
   addToHistory(path);
   await loadAudioFiles(path);
@@ -363,7 +356,19 @@ function renderAudioFiles() {
 
   // 検索クエリでフィルタリング（正規表現/ワイルドカード対応）
   const matcher = createSearchMatcher(searchQuery);
-  const filteredFiles = audioFiles.filter(file => matcher(file.name));
+  let filteredFiles = audioFiles.filter(file => matcher(file.name));
+
+  // タグフィルタリング
+  if (tagFilter === "__favorites__") {
+    // お気に入りのみ
+    filteredFiles = filteredFiles.filter(file => favoriteFiles.has(file.path));
+  } else if (tagFilter) {
+    // 特定のタグでフィルタ
+    filteredFiles = filteredFiles.filter(file => {
+      const favoriteItem = favoriteFiles.get(file.path);
+      return favoriteItem && favoriteItem.tags && favoriteItem.tags.includes(tagFilter);
+    });
+  }
 
   if (filteredFiles.length === 0) {
     grid.innerHTML = '<p class="placeholder">検索条件に一致するファイルがありません</p>';
@@ -411,30 +416,46 @@ function renderAudioFiles() {
       }
     });
 
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.className = "audio-item-name";
-    nameInput.value = file.name;
-    nameInput.dataset.originalPath = file.path;
-    nameInput.addEventListener("blur", async (e) => {
-      const newName = e.target.value.trim();
-      const originalPath = e.target.dataset.originalPath;
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "audio-item-name";
+    nameSpan.textContent = file.name;
+    nameSpan.title = file.path;
 
-      if (newName && newName !== file.name) {
-        await renameFile(originalPath, newName, index);
-      } else {
-        e.target.value = file.name;
-      }
-    });
-    nameInput.addEventListener("keypress", (e) => {
-      if (e.key === "Enter") {
-        e.target.blur();
+    const copyNameBtn = document.createElement("button");
+    copyNameBtn.className = "copy-name-btn";
+    copyNameBtn.innerHTML = '<i class="mdi mdi-content-copy"></i>';
+    copyNameBtn.title = "ファイル名をコピー";
+    copyNameBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(file.name);
+        // コピー成功のフィードバック
+        copyNameBtn.innerHTML = '<i class="mdi mdi-check"></i>';
+        setTimeout(() => {
+          copyNameBtn.innerHTML = '<i class="mdi mdi-content-copy"></i>';
+        }, 1000);
+      } catch (error) {
+        console.error("Failed to copy:", error);
       }
     });
 
     header.appendChild(checkbox);
     header.appendChild(favoriteBtn);
-    header.appendChild(nameInput);
+    header.appendChild(nameSpan);
+    header.appendChild(copyNameBtn);
+
+    // タグを表示（お気に入りの場合のみ）
+    const favoriteItem = favoriteFiles.get(file.path);
+    const tagsDiv = document.createElement("div");
+    tagsDiv.className = "audio-item-tags";
+    if (favoriteItem && favoriteItem.tags && favoriteItem.tags.length > 0) {
+      favoriteItem.tags.forEach(tag => {
+        const tagSpan = document.createElement("span");
+        tagSpan.className = "tag-badge";
+        tagSpan.textContent = tag;
+        tagsDiv.appendChild(tagSpan);
+      });
+    }
 
     // 音声の長さを表示
     const durationDiv = document.createElement("div");
@@ -444,9 +465,10 @@ function renderAudioFiles() {
     const playBtn = document.createElement("button");
     playBtn.className = "play-btn";
     playBtn.innerHTML = '<i class="mdi mdi-play"></i> 再生';
-    playBtn.addEventListener("click", () => togglePlayAudio(file.path, item, playBtn));
+    playBtn.addEventListener("click", () => togglePlayAudio(file.path, file.duration_seconds, item, playBtn));
 
     item.appendChild(header);
+    item.appendChild(tagsDiv);
     item.appendChild(durationDiv);
     item.appendChild(playBtn);
     grid.appendChild(item);
@@ -454,29 +476,36 @@ function renderAudioFiles() {
     if (selectedFiles.has(file.path)) {
       item.classList.add("selected");
     }
+
+    // 現在再生中のファイルをハイライト
+    if (currentPlayingPath === file.path) {
+      item.classList.add("playing");
+      playBtn.innerHTML = '<i class="mdi mdi-stop"></i> 停止';
+      playBtn.classList.add("stopping");
+    }
   });
 
   updateSelectedCount();
 }
 
 // 音声の再生/停止を切り替え
-async function togglePlayAudio(path, itemElement, buttonElement) {
+async function togglePlayAudio(path, duration, itemElement, buttonElement) {
   // ボタンが既に無効化されている場合は何もしない（連打防止）
-  if (buttonElement.disabled) {
+  if (buttonElement && buttonElement.disabled) {
     return;
   }
 
   try {
     // ボタンを一時的に無効化（連打防止）
-    buttonElement.disabled = true;
+    if (buttonElement) {
+      buttonElement.disabled = true;
+    }
 
     // 既に再生中の同じファイルをクリックした場合は停止
     if (currentPlayingPath === path) {
       await invoke("stop_audio");
-      itemElement.classList.remove("playing");
-      buttonElement.innerHTML = '<i class="mdi mdi-play"></i> 再生';
-      buttonElement.classList.remove("stopping");
-      currentPlayingPath = null;
+      resetPlayingUI();
+      stopPlaybackUpdate();
       return;
     }
 
@@ -496,7 +525,7 @@ async function togglePlayAudio(path, itemElement, buttonElement) {
         if (prevButton) {
           prevButton.innerHTML = '<i class="mdi mdi-play"></i> 再生';
           prevButton.classList.remove("stopping");
-          prevButton.disabled = false; // 前のボタンを再度有効化
+          prevButton.disabled = false;
         }
       }
     }
@@ -506,15 +535,126 @@ async function togglePlayAudio(path, itemElement, buttonElement) {
 
     // 新しい再生中の要素を設定
     currentPlayingPath = path;
-    itemElement.classList.add("playing");
-    buttonElement.innerHTML = '<i class="mdi mdi-stop"></i> 停止';
-    buttonElement.classList.add("stopping");
+    currentPlayingDuration = duration;
+    lastPlayedPath = path;
+    lastPlayedDuration = duration;
+    if (itemElement) {
+      itemElement.classList.add("playing");
+    }
+    if (buttonElement) {
+      buttonElement.innerHTML = '<i class="mdi mdi-stop"></i> 停止';
+      buttonElement.classList.add("stopping");
+    }
+
+    // プレイヤーパネルを更新
+    updatePlayerPanel(path, duration);
+    startPlaybackUpdate();
   } catch (error) {
     console.error("Error playing audio:", error);
     alert("音声の再生中にエラーが発生しました: " + error);
   } finally {
     // ボタンを再度有効化
-    buttonElement.disabled = false;
+    if (buttonElement) {
+      buttonElement.disabled = false;
+    }
+  }
+}
+
+// プレイヤーパネルを更新
+function updatePlayerPanel(path, duration) {
+  const filename = path.split(/[\\/]/).pop();
+  document.getElementById("player-filename").textContent = filename;
+  document.getElementById("player-filename").title = path;
+  document.getElementById("player-duration").textContent = formatDuration(duration);
+  document.getElementById("player-current-time").textContent = "0:00";
+
+  const seekbar = document.getElementById("player-seekbar");
+  seekbar.max = duration || 100;
+  seekbar.value = 0;
+
+  document.getElementById("player-play-pause-btn").disabled = false;
+  document.getElementById("player-stop-btn").disabled = false;
+
+  const playPauseBtn = document.getElementById("player-play-pause-btn");
+  playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
+}
+
+// 再生状態を定期的に更新
+function startPlaybackUpdate() {
+  stopPlaybackUpdate();
+  playbackUpdateInterval = setInterval(async () => {
+    try {
+      const status = await invoke("get_playback_status");
+      if (status.is_playing || status.is_paused) {
+        document.getElementById("player-current-time").textContent = formatDuration(status.position);
+        const seekbar = document.getElementById("player-seekbar");
+        if (status.duration) {
+          seekbar.max = status.duration;
+        }
+        if (!seekbar.dataset.dragging) {
+          seekbar.value = status.position;
+        }
+
+        const playPauseBtn = document.getElementById("player-play-pause-btn");
+        if (status.is_paused) {
+          playPauseBtn.innerHTML = '<i class="mdi mdi-play"></i>';
+        } else {
+          playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
+        }
+      }
+    } catch (error) {
+      console.error("Error getting playback status:", error);
+    }
+  }, 200);
+}
+
+// 再生状態の更新を停止
+function stopPlaybackUpdate() {
+  if (playbackUpdateInterval) {
+    clearInterval(playbackUpdateInterval);
+    playbackUpdateInterval = null;
+  }
+}
+
+// 再生UIをリセット
+function resetPlayingUI() {
+  if (currentPlayingPath) {
+    const allItems = document.querySelectorAll('.audio-item[data-path]');
+    for (const el of allItems) {
+      if (el.dataset.path === currentPlayingPath) {
+        el.classList.remove("playing");
+        const button = el.querySelector(".play-btn");
+        if (button) {
+          button.innerHTML = '<i class="mdi mdi-play"></i> 再生';
+          button.classList.remove("stopping");
+        }
+        break;
+      }
+    }
+  }
+  currentPlayingPath = null;
+  currentPlayingDuration = null;
+
+  // lastPlayedPathがある場合は、ファイル名を表示したまま再生ボタンを有効に保つ
+  if (lastPlayedPath) {
+    const filename = lastPlayedPath.split(/[\\/]/).pop();
+    document.getElementById("player-filename").textContent = filename;
+    document.getElementById("player-filename").title = lastPlayedPath;
+    document.getElementById("player-current-time").textContent = "0:00";
+    document.getElementById("player-duration").textContent = formatDuration(lastPlayedDuration);
+    document.getElementById("player-seekbar").value = 0;
+    document.getElementById("player-seekbar").max = lastPlayedDuration || 100;
+    document.getElementById("player-play-pause-btn").disabled = false;
+    document.getElementById("player-stop-btn").disabled = true;
+    document.getElementById("player-play-pause-btn").innerHTML = '<i class="mdi mdi-play"></i>';
+  } else {
+    document.getElementById("player-filename").textContent = "再生中のファイルはありません";
+    document.getElementById("player-current-time").textContent = "0:00";
+    document.getElementById("player-duration").textContent = "0:00";
+    document.getElementById("player-seekbar").value = 0;
+    document.getElementById("player-play-pause-btn").disabled = true;
+    document.getElementById("player-stop-btn").disabled = true;
+    document.getElementById("player-play-pause-btn").innerHTML = '<i class="mdi mdi-play"></i>';
   }
 }
 
@@ -550,45 +690,8 @@ function updateSelectedCount() {
   const count = selectedFiles.size;
   document.getElementById("selected-count").textContent = `選択: ${count}個`;
 
-  const renameBtn = document.getElementById("rename-selected-btn");
   const copyBtn = document.getElementById("copy-selected-btn");
-
-  renameBtn.disabled = count === 0;
   copyBtn.disabled = count === 0;
-}
-
-// 選択したファイルの名前を一括編集
-async function renameSelected() {
-  if (selectedFiles.size === 0) return;
-
-  const prefix = prompt("ファイル名の接頭辞を入力してください（空欄の場合は変更なし）:");
-  if (prefix === null) return;
-
-  const suffix = prompt("ファイル名の接尾辞を入力してください（空欄の場合は変更なし）:");
-  if (suffix === null) return;
-
-  if (!prefix && !suffix) {
-    alert("接頭辞または接尾辞を入力してください");
-    return;
-  }
-
-  const selectedArray = Array.from(selectedFiles);
-  for (const filePath of selectedArray) {
-    const fileIndex = audioFiles.findIndex(f => f.path === filePath);
-    if (fileIndex === -1) continue;
-
-    const file = audioFiles[fileIndex];
-    const nameParts = file.name.split(".");
-    const extension = nameParts.pop();
-    const baseName = nameParts.join(".");
-    const newName = `${prefix}${baseName}${suffix}.${extension}`;
-
-    try {
-      await renameFile(filePath, newName, fileIndex);
-    } catch (error) {
-      console.error(`Error renaming ${file.name}:`, error);
-    }
-  }
 }
 
 // 選択したファイルをコピー
@@ -649,14 +752,497 @@ function closeDrawer() {
   drawer.classList.remove("show");
 }
 
+// お気に入り画面を開く
+async function openFavoritesModal() {
+  await getFavoriteFiles();
+  selectedFavorites.clear(); // 選択状態をリセット
+  updateTagFilterOptions();
+  updateFolderFilterOptions();
+  renderFavoritesList();
+  const modal = document.getElementById("favorites-modal");
+  modal.classList.add("show");
+}
+
+// お気に入り画面を閉じる
+function closeFavoritesModal() {
+  const modal = document.getElementById("favorites-modal");
+  modal.classList.remove("show");
+}
+
+// タグフィルターのオプションを更新（お気に入り画面用）
+function updateTagFilterOptions() {
+  const select = document.getElementById("favorites-tag-filter");
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">すべてのタグ</option>';
+  allTags.forEach(tag => {
+    const option = document.createElement("option");
+    option.value = tag;
+    option.textContent = tag;
+    select.appendChild(option);
+  });
+  select.value = currentValue;
+}
+
+// メイン画面のタグフィルターのオプションを更新
+function updateMainTagFilterOptions() {
+  const select = document.getElementById("tag-filter-select");
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">すべて</option><option value="__favorites__">お気に入りのみ</option>';
+  allTags.forEach(tag => {
+    const option = document.createElement("option");
+    option.value = tag;
+    option.textContent = tag;
+    select.appendChild(option);
+  });
+  select.value = currentValue;
+}
+
+// フォルダフィルターのオプションを更新
+function updateFolderFilterOptions() {
+  const select = document.getElementById("favorites-folder-filter");
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">すべてのフォルダ</option>';
+
+  const bookmarks = getBookmarks();
+  // お気に入りファイルの親フォルダを取得
+  const favoriteFolders = new Set();
+  favoriteFiles.forEach(item => {
+    const folder = getParentFolder(item.file_path);
+    if (folder) {
+      favoriteFolders.add(folder);
+    }
+  });
+
+  // ブックマークされているフォルダのみを表示
+  bookmarks.forEach(bookmarkPath => {
+    // ブックマークフォルダに該当するお気に入りファイルがあるかチェック
+    let hasFiles = false;
+    for (const folder of favoriteFolders) {
+      if (folder === bookmarkPath || folder.startsWith(bookmarkPath + "\\") || folder.startsWith(bookmarkPath + "/")) {
+        hasFiles = true;
+        break;
+      }
+    }
+    if (hasFiles) {
+      const option = document.createElement("option");
+      option.value = bookmarkPath;
+      option.textContent = getFolderName(bookmarkPath);
+      option.title = bookmarkPath;
+      select.appendChild(option);
+    }
+  });
+
+  select.value = currentValue;
+}
+
+// ファイルパスから親フォルダを取得
+function getParentFolder(filePath) {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const lastSlash = normalizedPath.lastIndexOf('/');
+  if (lastSlash > 0) {
+    return filePath.substring(0, lastSlash);
+  }
+  return null;
+}
+
+// お気に入りリストを表示
+function renderFavoritesList() {
+  const container = document.getElementById("favorites-list-container");
+  const searchQuery = document.getElementById("favorites-search-input").value.toLowerCase();
+  const tagFilter = document.getElementById("favorites-tag-filter").value;
+  const folderFilter = document.getElementById("favorites-folder-filter").value;
+
+  const filteredFavorites = Array.from(favoriteFiles.values()).filter(item => {
+    const fileName = item.file_path.split(/[\\/]/).pop().toLowerCase();
+    const matchesSearch = !searchQuery || fileName.includes(searchQuery);
+    const matchesTag = !tagFilter || item.tags.includes(tagFilter);
+
+    // フォルダフィルタ：ブックマークフォルダまたはそのサブフォルダに含まれるか
+    let matchesFolder = true;
+    if (folderFilter) {
+      const parentFolder = getParentFolder(item.file_path);
+      matchesFolder = parentFolder === folderFilter ||
+        parentFolder.startsWith(folderFilter + "\\") ||
+        parentFolder.startsWith(folderFilter + "/");
+    }
+
+    return matchesSearch && matchesTag && matchesFolder;
+  });
+
+  if (filteredFavorites.length === 0) {
+    container.innerHTML = '<p class="empty-message">お気に入りはありません</p>';
+    updateFavoritesSelectionUI();
+    return;
+  }
+
+  container.innerHTML = "";
+  filteredFavorites.forEach(item => {
+    const itemDiv = document.createElement("div");
+    itemDiv.className = "favorites-item";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "favorites-item-checkbox";
+    checkbox.checked = selectedFavorites.has(item.file_path);
+    checkbox.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        selectedFavorites.add(item.file_path);
+      } else {
+        selectedFavorites.delete(item.file_path);
+      }
+      updateFavoritesSelectionUI();
+    });
+
+    const fileName = item.file_path.split(/[\\/]/).pop();
+
+    const infoDiv = document.createElement("div");
+    infoDiv.className = "favorites-item-info";
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "favorites-item-name";
+    nameSpan.textContent = fileName;
+    nameSpan.title = item.file_path;
+
+    const tagsDiv = document.createElement("div");
+    tagsDiv.className = "favorites-item-tags";
+    if (item.tags && item.tags.length > 0) {
+      item.tags.forEach(tag => {
+        const tagSpan = document.createElement("span");
+        tagSpan.className = "tag-badge";
+        tagSpan.textContent = tag;
+        tagsDiv.appendChild(tagSpan);
+      });
+    }
+
+    infoDiv.appendChild(nameSpan);
+    infoDiv.appendChild(tagsDiv);
+
+    const actionsDiv = document.createElement("div");
+    actionsDiv.className = "favorites-item-actions";
+
+    const playBtn = document.createElement("button");
+    playBtn.className = "favorites-action-btn play";
+    playBtn.innerHTML = '<i class="mdi mdi-play"></i>';
+    playBtn.title = "再生";
+    playBtn.addEventListener("click", async () => {
+      try {
+        await invoke("play_audio", { path: item.file_path });
+        currentPlayingPath = item.file_path;
+        lastPlayedPath = item.file_path;
+        updatePlayerPanel(item.file_path, null);
+        startPlaybackUpdate();
+      } catch (error) {
+        console.error("Error playing favorite:", error);
+        alert("ファイルが見つかりません: " + item.file_path);
+      }
+    });
+
+    const tagBtn = document.createElement("button");
+    tagBtn.className = "favorites-action-btn tag";
+    tagBtn.innerHTML = '<i class="mdi mdi-tag-multiple"></i>';
+    tagBtn.title = "タグを編集";
+    tagBtn.addEventListener("click", () => {
+      openTagEditModal(item.file_path, item.tags || []);
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "favorites-action-btn remove";
+    removeBtn.innerHTML = '<i class="mdi mdi-delete"></i>';
+    removeBtn.title = "削除";
+    removeBtn.addEventListener("click", () => {
+      removeFavorite(item.file_path);
+    });
+
+    actionsDiv.appendChild(playBtn);
+    actionsDiv.appendChild(tagBtn);
+    actionsDiv.appendChild(removeBtn);
+
+    itemDiv.appendChild(checkbox);
+    itemDiv.appendChild(infoDiv);
+    itemDiv.appendChild(actionsDiv);
+    container.appendChild(itemDiv);
+  });
+
+  updateFavoritesSelectionUI();
+}
+
+// お気に入り選択状態のUIを更新
+function updateFavoritesSelectionUI() {
+  const count = selectedFavorites.size;
+  document.getElementById("favorites-selected-count").textContent = `選択: ${count}個`;
+  document.getElementById("favorites-bulk-tag-btn").disabled = count === 0;
+
+  // すべて選択チェックボックスの状態を更新
+  const allCheckbox = document.getElementById("favorites-select-all-checkbox");
+  const totalItems = favoriteFiles.size;
+  if (count === 0) {
+    allCheckbox.checked = false;
+    allCheckbox.indeterminate = false;
+  } else if (count === totalItems) {
+    allCheckbox.checked = true;
+    allCheckbox.indeterminate = false;
+  } else {
+    allCheckbox.checked = false;
+    allCheckbox.indeterminate = true;
+  }
+}
+
+// 一括タグ編集モーダルを開く
+function openBulkTagModal() {
+  bulkTags = [];
+  document.getElementById("bulk-tag-target-count").textContent =
+    `${selectedFavorites.size}個のファイルにタグを付与します`;
+  document.getElementById("bulk-tag-input").value = "";
+
+  renderBulkTags();
+  renderBulkTagSuggestions();
+
+  const modal = document.getElementById("bulk-tag-modal");
+  modal.classList.add("show");
+}
+
+// 一括タグ編集モーダルを閉じる
+function closeBulkTagModal() {
+  const modal = document.getElementById("bulk-tag-modal");
+  modal.classList.remove("show");
+  bulkTags = [];
+}
+
+// 一括付与するタグを表示
+function renderBulkTags() {
+  const container = document.getElementById("bulk-tag-list");
+  container.innerHTML = "";
+
+  if (bulkTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">タグなし</span>';
+    return;
+  }
+
+  bulkTags.forEach(tag => {
+    const tagSpan = document.createElement("span");
+    tagSpan.className = "tag-chip";
+    tagSpan.innerHTML = `${tag} <button class="tag-remove-btn"><i class="mdi mdi-close"></i></button>`;
+    tagSpan.querySelector(".tag-remove-btn").addEventListener("click", () => {
+      bulkTags = bulkTags.filter(t => t !== tag);
+      renderBulkTags();
+      renderBulkTagSuggestions();
+    });
+    container.appendChild(tagSpan);
+  });
+}
+
+// 一括タグ候補を表示
+function renderBulkTagSuggestions() {
+  const container = document.getElementById("bulk-tag-suggestions-list");
+  container.innerHTML = "";
+
+  const availableTags = allTags.filter(tag => !bulkTags.includes(tag));
+
+  if (availableTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">候補なし</span>';
+    return;
+  }
+
+  availableTags.forEach(tag => {
+    const tagSpan = document.createElement("span");
+    tagSpan.className = "tag-suggestion";
+    tagSpan.textContent = tag;
+    tagSpan.addEventListener("click", () => {
+      if (!bulkTags.includes(tag)) {
+        bulkTags.push(tag);
+        renderBulkTags();
+        renderBulkTagSuggestions();
+      }
+    });
+    container.appendChild(tagSpan);
+  });
+}
+
+// 一括タグを入力から追加
+function addBulkTagFromInput() {
+  const input = document.getElementById("bulk-tag-input");
+  const tag = input.value.trim();
+  if (tag && !bulkTags.includes(tag)) {
+    bulkTags.push(tag);
+    input.value = "";
+    renderBulkTags();
+    renderBulkTagSuggestions();
+  }
+}
+
+// 一括タグ付与を実行
+async function saveBulkTags() {
+  if (bulkTags.length === 0) {
+    alert("付与するタグを選択してください");
+    return;
+  }
+
+  const selectedPaths = Array.from(selectedFavorites);
+  for (const filePath of selectedPaths) {
+    const item = favoriteFiles.get(filePath);
+    if (item) {
+      // 既存のタグに新しいタグをマージ（重複を除去）
+      const newTags = [...new Set([...item.tags, ...bulkTags])];
+      await updateFavoriteTags(filePath, newTags);
+    }
+  }
+
+  closeBulkTagModal();
+  selectedFavorites.clear();
+  renderFavoritesList();
+}
+
+// タグ編集モーダルを開く
+function openTagEditModal(filePath, currentTags) {
+  editingTagsFilePath = filePath;
+  editingTags = [...currentTags];
+
+  const fileName = filePath.split(/[\\/]/).pop();
+  document.getElementById("tag-edit-filename").textContent = fileName;
+  document.getElementById("tag-input").value = "";
+
+  renderCurrentTags();
+  renderTagSuggestions();
+
+  const modal = document.getElementById("tag-edit-modal");
+  modal.classList.add("show");
+}
+
+// タグ編集モーダルを閉じる
+function closeTagEditModal() {
+  const modal = document.getElementById("tag-edit-modal");
+  modal.classList.remove("show");
+  editingTagsFilePath = null;
+  editingTags = [];
+}
+
+// 現在のタグを表示
+function renderCurrentTags() {
+  const container = document.getElementById("current-tags-list");
+  container.innerHTML = "";
+
+  if (editingTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">タグなし</span>';
+    return;
+  }
+
+  editingTags.forEach(tag => {
+    const tagSpan = document.createElement("span");
+    tagSpan.className = "tag-chip";
+    tagSpan.innerHTML = `${tag} <button class="tag-remove-btn"><i class="mdi mdi-close"></i></button>`;
+    tagSpan.querySelector(".tag-remove-btn").addEventListener("click", () => {
+      editingTags = editingTags.filter(t => t !== tag);
+      renderCurrentTags();
+    });
+    container.appendChild(tagSpan);
+  });
+}
+
+// タグ候補を表示
+function renderTagSuggestions() {
+  const container = document.getElementById("tag-suggestions-list");
+  container.innerHTML = "";
+
+  const availableTags = allTags.filter(tag => !editingTags.includes(tag));
+
+  if (availableTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">候補なし</span>';
+    return;
+  }
+
+  availableTags.forEach(tag => {
+    const tagSpan = document.createElement("span");
+    tagSpan.className = "tag-suggestion";
+    tagSpan.textContent = tag;
+    tagSpan.addEventListener("click", () => {
+      if (!editingTags.includes(tag)) {
+        editingTags.push(tag);
+        renderCurrentTags();
+        renderTagSuggestions();
+      }
+    });
+    container.appendChild(tagSpan);
+  });
+}
+
+// タグを追加
+function addTagFromInput() {
+  const input = document.getElementById("tag-input");
+  const tag = input.value.trim();
+  if (tag && !editingTags.includes(tag)) {
+    editingTags.push(tag);
+    input.value = "";
+    renderCurrentTags();
+    renderTagSuggestions();
+  }
+}
+
+// タグを保存
+async function saveTagEdits() {
+  if (editingTagsFilePath) {
+    await updateFavoriteTags(editingTagsFilePath, editingTags);
+  }
+  closeTagEditModal();
+}
+
+// コンテキストメニューを表示
+function showContextMenu(x, y, path) {
+  const menu = document.getElementById("context-menu");
+  menu.dataset.path = path;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add("show");
+}
+
+// コンテキストメニューを非表示
+function hideContextMenu() {
+  const menu = document.getElementById("context-menu");
+  menu.classList.remove("show");
+}
+
+// エクスプローラで開く
+async function openInExplorer(path) {
+  try {
+    await invoke("open_in_explorer", { path });
+  } catch (error) {
+    console.error("Error opening in explorer:", error);
+    alert("エクスプローラを開けませんでした: " + error);
+  }
+}
+
 // イベントリスナーの設定
 window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("select-folder-btn").addEventListener("click", selectFolder);
   document.getElementById("bookmark-current-btn").addEventListener("click", bookmarkCurrent);
-  document.getElementById("rename-selected-btn").addEventListener("click", renameSelected);
   document.getElementById("copy-selected-btn").addEventListener("click", copySelected);
   document.getElementById("modal-ok-btn").addEventListener("click", closeModal);
   document.getElementById("modal-open-folder-btn").addEventListener("click", openCopiedFolder);
+
+  // コンテキストメニュー
+  const contextMenu = document.getElementById("context-menu");
+  const currentFolderEl = document.getElementById("current-folder");
+
+  currentFolderEl.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (currentFolder) {
+      showContextMenu(e.clientX, e.clientY, currentFolder);
+    }
+  });
+
+  document.getElementById("context-open-explorer").addEventListener("click", () => {
+    const path = contextMenu.dataset.path;
+    if (path) {
+      openInExplorer(path);
+    }
+    hideContextMenu();
+  });
+
+  // どこかをクリックしたらコンテキストメニューを閉じる
+  document.addEventListener("click", (e) => {
+    if (!contextMenu.contains(e.target)) {
+      hideContextMenu();
+    }
+  });
 
   // 検索フィルタのイベントリスナー
   const searchInput = document.getElementById("search-input");
@@ -678,6 +1264,12 @@ window.addEventListener("DOMContentLoaded", () => {
     searchInput.value = "";
     searchQuery = "";
     clearSearchBtn.classList.remove("show");
+    renderAudioFiles();
+  });
+
+  // タグフィルターのイベントリスナー
+  document.getElementById("tag-filter-select").addEventListener("change", (e) => {
+    tagFilter = e.target.value;
     renderAudioFiles();
   });
 
@@ -725,6 +1317,155 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // お気に入り画面
+  document.getElementById("favorites-screen-btn").addEventListener("click", openFavoritesModal);
+  document.getElementById("favorites-modal-close-btn").addEventListener("click", closeFavoritesModal);
+  document.getElementById("favorites-modal").addEventListener("click", (e) => {
+    if (e.target.id === "favorites-modal") {
+      closeFavoritesModal();
+    }
+  });
+
+  document.getElementById("favorites-search-input").addEventListener("input", renderFavoritesList);
+  document.getElementById("favorites-tag-filter").addEventListener("change", renderFavoritesList);
+  document.getElementById("favorites-folder-filter").addEventListener("change", renderFavoritesList);
+
+  // お気に入り選択・一括タグ付与
+  document.getElementById("favorites-select-all-checkbox").addEventListener("change", (e) => {
+    if (e.target.checked) {
+      // すべて選択
+      favoriteFiles.forEach((item, path) => {
+        selectedFavorites.add(path);
+      });
+    } else {
+      // すべて解除
+      selectedFavorites.clear();
+    }
+    renderFavoritesList();
+  });
+
+  document.getElementById("favorites-bulk-tag-btn").addEventListener("click", openBulkTagModal);
+
+  // 一括タグ編集モーダル
+  document.getElementById("bulk-tag-modal-close-btn").addEventListener("click", closeBulkTagModal);
+  document.getElementById("bulk-tag-cancel-btn").addEventListener("click", closeBulkTagModal);
+  document.getElementById("bulk-tag-save-btn").addEventListener("click", saveBulkTags);
+  document.getElementById("bulk-tag-add-btn").addEventListener("click", addBulkTagFromInput);
+  document.getElementById("bulk-tag-input").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      addBulkTagFromInput();
+    }
+  });
+  document.getElementById("bulk-tag-modal").addEventListener("click", (e) => {
+    if (e.target.id === "bulk-tag-modal") {
+      closeBulkTagModal();
+    }
+  });
+
+  // タグ編集モーダル
+  document.getElementById("tag-edit-modal-close-btn").addEventListener("click", closeTagEditModal);
+  document.getElementById("tag-cancel-btn").addEventListener("click", closeTagEditModal);
+  document.getElementById("tag-save-btn").addEventListener("click", saveTagEdits);
+  document.getElementById("tag-add-btn").addEventListener("click", addTagFromInput);
+  document.getElementById("tag-input").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      addTagFromInput();
+    }
+  });
+  document.getElementById("tag-edit-modal").addEventListener("click", (e) => {
+    if (e.target.id === "tag-edit-modal") {
+      closeTagEditModal();
+    }
+  });
+
+  // プレイヤーパネルのコントロール
+  const playPauseBtn = document.getElementById("player-play-pause-btn");
+  const stopBtn = document.getElementById("player-stop-btn");
+  const seekbar = document.getElementById("player-seekbar");
+
+  playPauseBtn.addEventListener("click", async () => {
+    try {
+      const status = await invoke("get_playback_status");
+      if (status.is_paused) {
+        await invoke("resume_audio");
+        playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
+      } else if (status.is_playing) {
+        await invoke("pause_audio");
+        playPauseBtn.innerHTML = '<i class="mdi mdi-play"></i>';
+      } else if (lastPlayedPath) {
+        // 停止状態だが、前回再生したファイルがある場合は再生を開始
+        await invoke("play_audio", { path: lastPlayedPath });
+        currentPlayingPath = lastPlayedPath;
+        currentPlayingDuration = lastPlayedDuration;
+        playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
+        playPauseBtn.disabled = false;
+        stopBtn.disabled = false;
+        updatePlayerPanel(lastPlayedPath, lastPlayedDuration);
+        startPlaybackUpdate();
+        // UIも更新
+        const allItems = document.querySelectorAll('.audio-item[data-path]');
+        for (const el of allItems) {
+          if (el.dataset.path === lastPlayedPath) {
+            el.classList.add("playing");
+            const button = el.querySelector(".play-btn");
+            if (button) {
+              button.innerHTML = '<i class="mdi mdi-stop"></i> 停止';
+              button.classList.add("stopping");
+            }
+            break;
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error toggling play/pause:", error);
+    }
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    try {
+      await invoke("stop_audio");
+      resetPlayingUI();
+      stopPlaybackUpdate();
+    } catch (error) {
+      console.error("Error stopping audio:", error);
+    }
+  });
+
+  seekbar.addEventListener("mousedown", () => {
+    seekbar.dataset.dragging = "true";
+  });
+
+  seekbar.addEventListener("mouseup", async () => {
+    delete seekbar.dataset.dragging;
+    if (currentPlayingPath) {
+      // 再生状態を確認してからシーク
+      try {
+        const status = await invoke("get_playback_status");
+        if (status.is_playing || status.is_paused) {
+          const position = parseFloat(seekbar.value);
+          await invoke("seek_audio", { path: currentPlayingPath, position });
+        }
+      } catch (error) {
+        console.error("Error seeking:", error);
+      }
+    }
+  });
+
+  seekbar.addEventListener("change", async () => {
+    if (currentPlayingPath && !seekbar.dataset.dragging) {
+      // 再生状態を確認してからシーク
+      try {
+        const status = await invoke("get_playback_status");
+        if (status.is_playing || status.is_paused) {
+          const position = parseFloat(seekbar.value);
+          await invoke("seek_audio", { path: currentPlayingPath, position });
+        }
+      } catch (error) {
+        console.error("Error seeking:", error);
+      }
+    }
+  });
+
   // 初期表示
   renderHistory();
   renderBookmarks();
@@ -736,26 +1477,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
     // 再生が終了したファイルのUIを更新
     if (currentPlayingPath === finishedPath) {
-      // data-path属性を持つすべての要素を確認し、直接比較
-      const allItems = document.querySelectorAll('.audio-item[data-path]');
-
-      let item = null;
-      for (const el of allItems) {
-        if (el.dataset.path === finishedPath) {
-          item = el;
-          break;
-        }
-      }
-
-      if (item) {
-        item.classList.remove("playing");
-        const button = item.querySelector(".play-btn");
-        if (button) {
-          button.innerHTML = '<i class="mdi mdi-play"></i> 再生';
-          button.classList.remove("stopping");
-        }
-      }
-      currentPlayingPath = null;
+      resetPlayingUI();
+      stopPlaybackUpdate();
     }
   });
 });

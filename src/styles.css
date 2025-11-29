@@ -12,6 +12,7 @@ body {
   min-height: 100vh;
   padding: 12px;
   padding-left: 72px; /* アクティビティバーの幅分 */
+  padding-bottom: 80px; /* プレイヤーパネルの高さ分 */
   font-size: 13px;
 }
 
@@ -30,6 +31,10 @@ body {
   gap: 12px;
   z-index: 900;
   box-shadow: 2px 0 8px rgba(0, 0, 0, 0.2);
+}
+
+.activity-spacer {
+  flex: 1;
 }
 
 .activity-icon {
@@ -76,7 +81,7 @@ body {
   border-radius: 8px;
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-  min-height: calc(100vh - 24px);
+  min-height: calc(100vh - 104px);
   display: flex;
   flex-direction: column;
 }
@@ -89,9 +94,10 @@ body {
   flex-wrap: wrap;
   position: sticky;
   top: 0;
-  background: #e5e5e5;
+  background: white;
   padding: 12px 0;
   z-index: 10;
+  border-bottom: 1px solid #eee;
 }
 
 .primary-btn {
@@ -123,6 +129,39 @@ body {
   font-size: 0.85rem;
   min-width: 200px;
   border: 1px solid #ddd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  position: relative;
+  cursor: default;
+}
+
+.current-folder.truncated:hover::after {
+  content: attr(data-fullpath);
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 4px;
+  padding: 8px 12px;
+  background: #333;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  white-space: normal;
+  word-break: break-all;
+  max-width: 400px;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.current-folder.truncated:hover::before {
+  content: "";
+  position: absolute;
+  left: 20px;
+  top: 100%;
+  border: 6px solid transparent;
+  border-bottom-color: #333;
+  z-index: 1001;
 }
 
 .search-box {
@@ -134,6 +173,8 @@ body {
   border: 1px solid #ccc;
   border-radius: 4px;
   min-width: 220px;
+  flex: 1;
+  max-width: 400px;
   transition: border-color 0.15s;
 }
 
@@ -153,6 +194,7 @@ body {
   outline: none;
   font-size: 0.9rem;
   color: #333;
+  min-width: 0;
 }
 
 .search-box input::placeholder {
@@ -176,6 +218,32 @@ body {
 
 .clear-search.show {
   display: block;
+}
+
+.tag-filter-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  min-width: 140px;
+}
+
+.tag-filter-box i {
+  color: #999;
+  font-size: 1rem;
+}
+
+.tag-filter-box select {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 0.85rem;
+  color: #333;
+  cursor: pointer;
+  background: transparent;
 }
 
 .view-toggle {
@@ -303,9 +371,10 @@ body {
 }
 
 .audio-item input[type="checkbox"] {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .favorite-btn {
@@ -319,6 +388,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .favorite-btn:hover {
@@ -336,17 +406,36 @@ body {
 .audio-item-name {
   flex: 1;
   padding: 4px 6px;
-  border: 1px solid #ddd;
-  border-radius: 3px;
   font-size: 0.85rem;
-  background: white;
-  cursor: text;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #333;
 }
 
-.audio-item-name:focus {
-  outline: none;
-  border-color: #0066cc;
-  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);
+.copy-name-btn {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.15s;
+  border-radius: 3px;
+}
+
+.copy-name-btn:hover {
+  color: #0066cc;
+  background: #f0f7ff;
+}
+
+.copy-name-btn i.mdi-check {
+  color: #28a745;
 }
 
 .audio-duration {
@@ -357,6 +446,24 @@ body {
   background: #f0f0f0;
   border-radius: 3px;
   font-weight: 400;
+}
+
+.audio-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.audio-item-tags .tag-badge {
+  font-size: 0.65rem;
+  padding: 1px 6px;
+}
+
+/* リストビューのタグ表示 */
+.audio-grid.list-view .audio-item-tags {
+  margin-top: 0;
+  margin-left: 8px;
 }
 
 .play-btn {
@@ -483,11 +590,127 @@ body {
   background: #bd2130;
 }
 
+/* プレイヤーパネル */
+.player-panel {
+  position: fixed;
+  bottom: 0;
+  left: 60px;
+  right: 0;
+  height: 68px;
+  background: #2c2c2c;
+  border-top: 1px solid #444;
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-content {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  max-width: 1000px;
+  padding: 0 20px;
+}
+
+.player-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  max-width: 250px;
+}
+
+.player-filename {
+  color: #fff;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-time {
+  color: #aaa;
+  font-size: 0.75rem;
+  display: flex;
+  gap: 4px;
+}
+
+.player-seekbar-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.player-seekbar {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #555;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.player-seekbar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #0066cc;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.player-seekbar::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.player-seekbar::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: #0066cc;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.player-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.player-btn {
+  width: 40px;
+  height: 40px;
+  background: #444;
+  border: none;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.player-btn:hover:not(:disabled) {
+  background: #555;
+}
+
+.player-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ドロワー - VSCode風 */
 .drawer {
   position: fixed;
   top: 0;
-  left: 60px; /* アクティビティバーの右側から */
+  left: 60px;
   width: calc(100% - 60px);
   height: 100%;
   background-color: rgba(0, 0, 0, 0.4);
@@ -504,16 +727,18 @@ body {
 
 .drawer-content {
   position: fixed;
-  left: 0;
+  left: 60px;
   top: 0;
   width: 320px;
-  max-width: 85%;
+  max-width: calc(100% - 60px);
   height: 100%;
   background: #ffffff;
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.15);
   transform: translateX(-100%);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .drawer.show .drawer-content {
@@ -528,6 +753,7 @@ body {
   border-bottom: 1px solid #ddd;
   background: #f5f5f5;
   color: #333;
+  flex-shrink: 0;
 }
 
 .drawer-header h2 {
@@ -568,8 +794,8 @@ body {
 }
 
 .drawer-body {
+  flex: 1;
   padding: 16px;
-  height: calc(100% - 60px - 52px); /* ヘッダー60px + フッター52px */
   overflow-y: auto;
 }
 
@@ -646,71 +872,12 @@ body {
   transform: scale(1.2);
 }
 
-.favorite-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  background: #f8f9fa;
-  border: 1px solid #e9ecef;
-  border-radius: 6px;
-  transition: all 0.2s;
-}
-
-.favorite-item:hover {
-  border-color: #ffc107;
-  background: #fffbf0;
-}
-
-.favorite-name {
-  flex: 1;
-  font-size: 0.9rem;
-  color: #555;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.favorite-play-btn {
-  background: #667eea;
-  border: none;
-  color: white;
-  cursor: pointer;
-  font-size: 1rem;
-  padding: 4px 8px;
-  border-radius: 4px;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.favorite-play-btn:hover {
-  background: #764ba2;
-  transform: scale(1.1);
-}
-
-.favorite-remove-btn {
-  background: none;
-  border: none;
-  color: #ffc107;
-  cursor: pointer;
-  font-size: 1.2rem;
-  padding: 0 4px;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-
-.favorite-remove-btn:hover {
-  color: #dc3545;
-  transform: scale(1.2);
-}
-
 /* ドロワーフッター（バージョン情報） */
 .drawer-footer {
   padding: 12px 16px;
   border-top: 1px solid #ddd;
   background: #f5f5f5;
+  flex-shrink: 0;
 }
 
 .app-info {
@@ -793,6 +960,9 @@ body {
 .modal-header {
   padding: 16px;
   border-bottom: 1px solid #ddd;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .modal-header h2 {
@@ -808,6 +978,26 @@ body {
 .modal-header h2 i {
   font-size: 1.2rem;
   color: #28a745;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 4px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.modal-close-btn:hover {
+  background: #e0e0e0;
 }
 
 .modal-body {
@@ -866,9 +1056,426 @@ body {
   border-color: #0066cc;
 }
 
+/* お気に入りモーダル */
+.favorites-modal .modal-header h2 i {
+  color: #e91e63;
+}
+
+.favorites-modal-content {
+  max-width: 700px;
+  width: 95%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.favorites-modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.favorites-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.favorites-bulk-btn {
+  padding: 6px 12px;
+  background: #1976d2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.favorites-bulk-btn:hover:not(:disabled) {
+  background: #1565c0;
+}
+
+.favorites-bulk-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.favorites-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.favorites-select-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.favorites-select-all input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.favorites-selected-count {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.favorites-item-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.favorites-filter,
+.favorites-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.favorites-filter i,
+.favorites-search i {
+  color: #999;
+  font-size: 1rem;
+}
+
+.favorites-filter select {
+  border: none;
+  outline: none;
+  font-size: 0.85rem;
+  color: #333;
+  cursor: pointer;
+  background: transparent;
+}
+
+.favorites-search {
+  flex: 1;
+  min-width: 150px;
+}
+
+.favorites-search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 0.85rem;
+  color: #333;
+  min-width: 0;
+}
+
+.favorites-list-container {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(80vh - 180px);
+}
+
+.favorites-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.favorites-item:hover {
+  border-color: #e91e63;
+  background: #fef0f5;
+}
+
+.favorites-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.favorites-item-name {
+  display: block;
+  font-size: 0.9rem;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.favorites-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tag-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #e3f2fd;
+  color: #1976d2;
+  border-radius: 12px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.favorites-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.favorites-action-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  transition: all 0.15s;
+}
+
+.favorites-action-btn.play {
+  background: #0066cc;
+  color: white;
+}
+
+.favorites-action-btn.play:hover {
+  background: #0052a3;
+}
+
+.favorites-action-btn.tag {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.favorites-action-btn.tag:hover {
+  background: #bbdefb;
+}
+
+.favorites-action-btn.remove {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.favorites-action-btn.remove:hover {
+  background: #ffcdd2;
+}
+
+/* タグ編集モーダル */
+.tag-edit-modal .modal-header h2 i {
+  color: #1976d2;
+}
+
+.tag-edit-modal-content {
+  max-width: 500px;
+}
+
+.tag-edit-filename {
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.tag-input-container {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tag-input-container input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.tag-input-container input:focus {
+  outline: none;
+  border-color: #0066cc;
+}
+
+.tag-add-btn {
+  width: 36px;
+  height: 36px;
+  background: #0066cc;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+}
+
+.tag-add-btn:hover {
+  background: #0052a3;
+}
+
+.tag-suggestions,
+.current-tags {
+  margin-bottom: 16px;
+}
+
+.tag-suggestions-label,
+.current-tags-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.tag-suggestions-list,
+.current-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-suggestion {
+  display: inline-block;
+  padding: 4px 10px;
+  background: #e0e0e0;
+  color: #555;
+  border-radius: 14px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tag-suggestion:hover {
+  background: #1976d2;
+  color: white;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 10px;
+  background: #e3f2fd;
+  color: #1976d2;
+  border-radius: 14px;
+  font-size: 0.8rem;
+}
+
+.tag-remove-btn {
+  background: none;
+  border: none;
+  color: #1976d2;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  transition: color 0.15s;
+}
+
+.tag-remove-btn:hover {
+  color: #c62828;
+}
+
+.no-tags {
+  color: #999;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* 一括タグ編集モーダル */
+.bulk-tag-modal .modal-header h2 i {
+  color: #1976d2;
+}
+
+.bulk-tag-modal-content {
+  max-width: 500px;
+}
+
+.bulk-tag-info {
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: #e3f2fd;
+  border-radius: 4px;
+}
+
+/* コンテキストメニュー */
+.context-menu {
+  position: fixed;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 2000;
+  display: none;
+  min-width: 180px;
+}
+
+.context-menu.show {
+  display: block;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #333;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.context-menu-item:hover {
+  background: #f0f7ff;
+}
+
+.context-menu-item i {
+  font-size: 1rem;
+  color: #666;
+}
+
 @media (max-width: 768px) {
   body {
-    padding-left: 70px; /* アクティビティバー分 */
+    padding-left: 60px;
+    padding-bottom: 80px;
   }
 
   .activity-bar {
@@ -886,13 +1493,35 @@ body {
     width: calc(100% - 50px);
   }
 
-  h1 {
-    font-size: 2rem;
+  .drawer-content {
+    left: 50px;
+    width: calc(100% - 50px);
+    max-width: calc(100% - 50px);
   }
 
-  .drawer-content {
-    width: 90%;
-    max-width: 90%;
+  .player-panel {
+    left: 50px;
+    height: 60px;
+  }
+
+  .player-content {
+    gap: 12px;
+    padding: 0 12px;
+  }
+
+  .player-info {
+    min-width: 100px;
+    max-width: 120px;
+  }
+
+  .player-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 1rem;
+  }
+
+  h1 {
+    font-size: 2rem;
   }
 
   .audio-grid {
@@ -917,6 +1546,21 @@ body {
   }
 
   .modal-btn {
+    width: 100%;
+  }
+
+  .favorites-modal-content {
+    width: 100%;
+    max-height: 90vh;
+    margin: 20px;
+  }
+
+  .favorites-toolbar {
+    flex-direction: column;
+  }
+
+  .favorites-filter,
+  .favorites-search {
     width: 100%;
   }
 }

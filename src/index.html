@@ -21,6 +21,10 @@
       <button id="bookmark-current-btn" class="activity-icon" disabled title="ブックマークに追加">
         <i class="mdi mdi-star-plus"></i>
       </button>
+      <div class="activity-spacer"></div>
+      <button id="favorites-screen-btn" class="activity-icon" title="お気に入り管理">
+        <i class="mdi mdi-heart"></i>
+      </button>
     </div>
 
     <main class="container">
@@ -32,6 +36,13 @@
           <button id="clear-search-btn" class="clear-search" title="クリア">
             <i class="mdi mdi-close"></i>
           </button>
+        </div>
+        <div class="tag-filter-box">
+          <i class="mdi mdi-tag"></i>
+          <select id="tag-filter-select">
+            <option value="">すべて</option>
+            <option value="__favorites__">お気に入りのみ</option>
+          </select>
         </div>
         <div class="view-toggle">
           <button id="grid-view-btn" class="view-btn active" title="グリッドビュー">
@@ -52,10 +63,6 @@
           <span id="selected-count">選択: 0個</span>
         </div>
         <div class="action-buttons">
-          <button id="rename-selected-btn" class="action-btn" disabled title="選択項目の名前を編集">
-            <i class="mdi mdi-pencil"></i>
-            <span>名前を編集</span>
-          </button>
           <button id="copy-selected-btn" class="action-btn" disabled title="選択項目をコピー">
             <i class="mdi mdi-content-copy"></i>
             <span>コピー</span>
@@ -63,6 +70,31 @@
         </div>
       </div>
     </main>
+
+    <!-- シークバー付きプレイヤーパネル -->
+    <div id="player-panel" class="player-panel">
+      <div class="player-content">
+        <div class="player-info">
+          <span id="player-filename" class="player-filename">再生中のファイルはありません</span>
+          <div class="player-time">
+            <span id="player-current-time">0:00</span>
+            <span>/</span>
+            <span id="player-duration">0:00</span>
+          </div>
+        </div>
+        <div class="player-seekbar-container">
+          <input type="range" id="player-seekbar" class="player-seekbar" min="0" max="100" value="0" step="0.1" />
+        </div>
+        <div class="player-controls">
+          <button id="player-play-pause-btn" class="player-btn" disabled>
+            <i class="mdi mdi-play"></i>
+          </button>
+          <button id="player-stop-btn" class="player-btn" disabled>
+            <i class="mdi mdi-stop"></i>
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- ドロワー -->
     <div id="drawer" class="drawer">
@@ -77,15 +109,6 @@
           </button>
         </div>
         <div class="drawer-body">
-          <div class="drawer-section">
-            <h3>
-              <i class="mdi mdi-star"></i>
-              お気に入り
-            </h3>
-            <div id="favorites-list" class="drawer-list">
-              <p class="empty-message">お気に入りはありません</p>
-            </div>
-          </div>
           <div class="drawer-section">
             <h3>
               <i class="mdi mdi-bookmark-multiple"></i>
@@ -109,10 +132,131 @@
               <i class="mdi mdi-help-circle"></i>
               <div class="app-info-text">
                 <strong>Sound Pad</strong>
-                <span>v0.1.0</span>
+                <span>v0.2.0</span>
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- お気に入り管理画面モーダル -->
+    <div id="favorites-modal" class="modal favorites-modal">
+      <div class="modal-content favorites-modal-content">
+        <div class="modal-header">
+          <h2>
+            <i class="mdi mdi-heart"></i>
+            お気に入り管理
+          </h2>
+          <button id="favorites-modal-close-btn" class="modal-close-btn">
+            <i class="mdi mdi-close"></i>
+          </button>
+        </div>
+        <div class="modal-body favorites-modal-body">
+          <div class="favorites-toolbar">
+            <div class="favorites-filter">
+              <i class="mdi mdi-folder"></i>
+              <select id="favorites-folder-filter">
+                <option value="">すべてのフォルダ</option>
+              </select>
+            </div>
+            <div class="favorites-filter">
+              <i class="mdi mdi-tag"></i>
+              <select id="favorites-tag-filter">
+                <option value="">すべてのタグ</option>
+              </select>
+            </div>
+            <div class="favorites-search">
+              <i class="mdi mdi-magnify"></i>
+              <input type="text" id="favorites-search-input" placeholder="ファイル名で検索..." />
+            </div>
+            <button id="favorites-bulk-tag-btn" class="favorites-bulk-btn" disabled title="選択項目にタグを一括付与">
+              <i class="mdi mdi-tag-plus"></i>
+              <span>タグを一括付与</span>
+            </button>
+          </div>
+          <div class="favorites-selection-bar">
+            <label class="favorites-select-all">
+              <input type="checkbox" id="favorites-select-all-checkbox" />
+              <span>すべて選択</span>
+            </label>
+            <span id="favorites-selected-count" class="favorites-selected-count">選択: 0個</span>
+          </div>
+          <div id="favorites-list-container" class="favorites-list-container">
+            <p class="empty-message">お気に入りはありません</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- タグ編集モーダル -->
+    <div id="tag-edit-modal" class="modal tag-edit-modal">
+      <div class="modal-content tag-edit-modal-content">
+        <div class="modal-header">
+          <h2>
+            <i class="mdi mdi-tag-multiple"></i>
+            タグを編集
+          </h2>
+          <button id="tag-edit-modal-close-btn" class="modal-close-btn">
+            <i class="mdi mdi-close"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p id="tag-edit-filename" class="tag-edit-filename"></p>
+          <div class="tag-input-container">
+            <input type="text" id="tag-input" placeholder="新しいタグを追加..." />
+            <button id="tag-add-btn" class="tag-add-btn">
+              <i class="mdi mdi-plus"></i>
+            </button>
+          </div>
+          <div class="tag-suggestions">
+            <span class="tag-suggestions-label">既存のタグ:</span>
+            <div id="tag-suggestions-list" class="tag-suggestions-list"></div>
+          </div>
+          <div class="current-tags">
+            <span class="current-tags-label">現在のタグ:</span>
+            <div id="current-tags-list" class="current-tags-list"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="tag-save-btn" class="modal-btn primary">保存</button>
+          <button id="tag-cancel-btn" class="modal-btn secondary">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 一括タグ編集モーダル -->
+    <div id="bulk-tag-modal" class="modal bulk-tag-modal">
+      <div class="modal-content bulk-tag-modal-content">
+        <div class="modal-header">
+          <h2>
+            <i class="mdi mdi-tag-plus"></i>
+            タグを一括付与
+          </h2>
+          <button id="bulk-tag-modal-close-btn" class="modal-close-btn">
+            <i class="mdi mdi-close"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p id="bulk-tag-target-count" class="bulk-tag-info"></p>
+          <div class="tag-input-container">
+            <input type="text" id="bulk-tag-input" placeholder="新しいタグを追加..." />
+            <button id="bulk-tag-add-btn" class="tag-add-btn">
+              <i class="mdi mdi-plus"></i>
+            </button>
+          </div>
+          <div class="tag-suggestions">
+            <span class="tag-suggestions-label">既存のタグ:</span>
+            <div id="bulk-tag-suggestions-list" class="tag-suggestions-list"></div>
+          </div>
+          <div class="current-tags">
+            <span class="current-tags-label">付与するタグ:</span>
+            <div id="bulk-tag-list" class="current-tags-list"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="bulk-tag-save-btn" class="modal-btn primary">一括付与</button>
+          <button id="bulk-tag-cancel-btn" class="modal-btn secondary">キャンセル</button>
         </div>
       </div>
     </div>
@@ -137,6 +281,13 @@
           </button>
         </div>
       </div>
+    </div>
+    <!-- コンテキストメニュー -->
+    <div id="context-menu" class="context-menu">
+      <button id="context-open-explorer" class="context-menu-item">
+        <i class="mdi mdi-folder-open"></i>
+        エクスプローラで開く
+      </button>
     </div>
   </body>
 </html>
