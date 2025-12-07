@@ -3,6 +3,7 @@ const { open } = window.__TAURI__.dialog;
 const { listen } = window.__TAURI__.event;
 
 let audioFiles = [];
+let subDirectories = [];
 let selectedFiles = new Set();
 let currentPlayingPath = null;
 let currentPlayingDuration = null;
@@ -118,10 +119,19 @@ function addToHistory(path) {
   renderHistory();
 }
 
-// ブックマークを取得
+// ブックマークを取得（オブジェクト形式に正規化）
 function getBookmarks() {
   const stored = localStorage.getItem(BOOKMARKS_KEY);
-  return stored ? JSON.parse(stored) : [];
+  if (!stored) return [];
+
+  const parsed = JSON.parse(stored);
+  // 後方互換性: 文字列の配列の場合はオブジェクト形式に変換
+  return parsed.map(item => {
+    if (typeof item === 'string') {
+      return { path: item, alias: null };
+    }
+    return item;
+  });
 }
 
 // ブックマークを保存
@@ -132,8 +142,8 @@ function saveBookmarks(bookmarks) {
 // ブックマークに追加
 function addBookmark(path) {
   let bookmarks = getBookmarks();
-  if (!bookmarks.includes(path)) {
-    bookmarks.push(path);
+  if (!bookmarks.some(b => b.path === path)) {
+    bookmarks.push({ path: path, alias: null });
     saveBookmarks(bookmarks);
     renderBookmarks();
   }
@@ -142,9 +152,28 @@ function addBookmark(path) {
 // ブックマークから削除
 function removeBookmark(path) {
   let bookmarks = getBookmarks();
-  bookmarks = bookmarks.filter(p => p !== path);
+  bookmarks = bookmarks.filter(b => b.path !== path);
   saveBookmarks(bookmarks);
   renderBookmarks();
+}
+
+// ブックマークの別名を更新
+function updateBookmarkAlias(path, alias) {
+  let bookmarks = getBookmarks();
+  const bookmark = bookmarks.find(b => b.path === path);
+  if (bookmark) {
+    bookmark.alias = alias || null;
+    saveBookmarks(bookmarks);
+    renderBookmarks();
+  }
+}
+
+// パスからブックマークの表示名を取得
+function getBookmarkDisplayName(bookmark) {
+  if (bookmark.alias) {
+    return bookmark.alias;
+  }
+  return getFolderName(bookmark.path);
 }
 
 // お気に入りファイルを取得
@@ -252,15 +281,20 @@ function renderBookmarks() {
   }
 
   container.innerHTML = "";
-  bookmarks.forEach(path => {
+  bookmarks.forEach(bookmark => {
     const item = document.createElement("div");
     item.className = "shortcut-item";
 
-    const folderName = getFolderName(path);
+    const displayName = getBookmarkDisplayName(bookmark);
     const pathSpan = document.createElement("span");
     pathSpan.className = "shortcut-path";
-    pathSpan.textContent = truncateFolderName(folderName);
-    pathSpan.title = path;
+    pathSpan.textContent = truncateFolderName(displayName);
+    // 別名がある場合はツールチップにフォルダ名も表示
+    if (bookmark.alias) {
+      pathSpan.title = `${getFolderName(bookmark.path)}\n${bookmark.path}`;
+    } else {
+      pathSpan.title = bookmark.path;
+    }
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "shortcut-remove";
@@ -268,14 +302,21 @@ function renderBookmarks() {
     removeBtn.title = "削除";
     removeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      removeBookmark(path);
+      removeBookmark(bookmark.path);
     });
 
     item.appendChild(pathSpan);
     item.appendChild(removeBtn);
     item.addEventListener("click", () => {
-      openFolder(path);
+      openFolder(bookmark.path);
       closeDrawer();
+    });
+
+    // 右クリックで名前変更メニューを表示
+    item.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showBookmarkContextMenu(e.clientX, e.clientY, bookmark);
     });
 
     container.appendChild(item);
@@ -285,22 +326,103 @@ function renderBookmarks() {
 // フォルダを開く
 async function openFolder(path) {
   currentFolder = path;
-  const folderEl = document.getElementById("current-folder");
-  folderEl.textContent = path;
-  folderEl.dataset.fullpath = path; // ツールチップ用のフルパス
   document.getElementById("bookmark-current-btn").disabled = false;
 
-  // テキストが省略されているかチェックしてツールチップを表示
-  requestAnimationFrame(() => {
-    if (folderEl.scrollWidth > folderEl.clientWidth) {
-      folderEl.classList.add("truncated");
-    } else {
-      folderEl.classList.remove("truncated");
-    }
-  });
+  // パンくずリストを更新
+  renderBreadcrumb(path);
 
   addToHistory(path);
   await loadAudioFiles(path);
+}
+
+// パンくずリストを描画
+function renderBreadcrumb(path) {
+  const container = document.getElementById("breadcrumb-container");
+  container.innerHTML = "";
+
+  // パスをセグメントに分割
+  const normalizedPath = path.replace(/\\/g, '/');
+  const segments = normalizedPath.split('/').filter(s => s);
+
+  // Windowsのドライブレター対応（例: "C:"）
+  let currentPath = "";
+
+  segments.forEach((segment, index) => {
+    // 区切り文字を追加（最初以外）
+    if (index > 0) {
+      const separator = document.createElement("span");
+      separator.className = "breadcrumb-separator";
+      separator.innerHTML = '<i class="mdi mdi-chevron-right"></i>';
+      container.appendChild(separator);
+    }
+
+    // パスを構築
+    if (index === 0 && segment.includes(':')) {
+      // Windowsドライブレター
+      currentPath = segment;
+    } else {
+      currentPath += '/' + segment;
+    }
+
+    const segmentPath = currentPath.replace(/\//g, '\\'); // Windowsパスに戻す
+
+    const segmentEl = document.createElement("span");
+    segmentEl.className = "breadcrumb-segment";
+    segmentEl.textContent = segment;
+    segmentEl.dataset.path = segmentPath;
+    segmentEl.title = segmentPath;
+
+    // クリックでそのディレクトリに移動
+    segmentEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openFolder(segmentPath);
+    });
+
+    // 右クリックでコンテキストメニュー
+    segmentEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showBreadcrumbContextMenu(e.clientX, e.clientY, segmentPath);
+    });
+
+    container.appendChild(segmentEl);
+  });
+}
+
+// アドレスバーの入力モードを切り替え
+function showAddressInput() {
+  const container = document.getElementById("breadcrumb-container");
+  const input = document.getElementById("address-input");
+
+  container.style.display = "none";
+  input.style.display = "block";
+  input.value = currentFolder || "";
+  input.focus();
+  input.select();
+}
+
+// アドレスバーの入力モードを終了
+function hideAddressInput() {
+  const container = document.getElementById("breadcrumb-container");
+  const input = document.getElementById("address-input");
+
+  container.style.display = "flex";
+  input.style.display = "none";
+}
+
+// パンくずリスト用コンテキストメニューを表示
+function showBreadcrumbContextMenu(x, y, path) {
+  const menu = document.getElementById("breadcrumb-context-menu");
+  menu.dataset.path = path;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add("show");
+}
+
+// パンくずリスト用コンテキストメニューを非表示
+function hideBreadcrumbContextMenu() {
+  const menu = document.getElementById("breadcrumb-context-menu");
+  menu.classList.remove("show");
 }
 
 // フォルダ選択
@@ -330,7 +452,9 @@ function bookmarkCurrent() {
 // 音声ファイル一覧を読み込み
 async function loadAudioFiles(directory) {
   try {
-    audioFiles = await invoke("get_audio_files", { directory });
+    const contents = await invoke("get_audio_files", { directory });
+    audioFiles = contents.files;
+    subDirectories = contents.directories;
     renderAudioFiles();
   } catch (error) {
     console.error("Error loading audio files:", error);
@@ -349,13 +473,15 @@ function renderAudioFiles() {
     grid.classList.remove("list-view");
   }
 
-  if (audioFiles.length === 0) {
-    grid.innerHTML = '<p class="placeholder">このフォルダには音声ファイルがありません</p>';
-    return;
-  }
-
   // 検索クエリでフィルタリング（正規表現/ワイルドカード対応）
   const matcher = createSearchMatcher(searchQuery);
+
+  // サブディレクトリをフィルタリング（タグフィルターがある場合はフォルダを非表示）
+  let filteredDirs = [];
+  if (!tagFilter) {
+    filteredDirs = subDirectories.filter(dir => matcher(dir.name));
+  }
+
   let filteredFiles = audioFiles.filter(file => matcher(file.name));
 
   // タグフィルタリング
@@ -370,12 +496,51 @@ function renderAudioFiles() {
     });
   }
 
-  if (filteredFiles.length === 0) {
-    grid.innerHTML = '<p class="placeholder">検索条件に一致するファイルがありません</p>';
+  if (filteredDirs.length === 0 && filteredFiles.length === 0) {
+    if (audioFiles.length === 0 && subDirectories.length === 0) {
+      grid.innerHTML = '<p class="placeholder">このフォルダには音声ファイルがありません</p>';
+    } else {
+      grid.innerHTML = '<p class="placeholder">検索条件に一致するファイルがありません</p>';
+    }
     return;
   }
 
   grid.innerHTML = "";
+
+  // フォルダを最上段に表示
+  filteredDirs.forEach(dir => {
+    const item = document.createElement("div");
+    item.className = "audio-item folder-item";
+    item.dataset.path = dir.path;
+
+    const header = document.createElement("div");
+    header.className = "audio-item-header";
+
+    const folderIcon = document.createElement("span");
+    folderIcon.className = "folder-icon";
+    folderIcon.innerHTML = '<i class="mdi mdi-folder"></i>';
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "audio-item-name folder-name";
+    nameSpan.textContent = dir.name;
+    nameSpan.title = dir.path;
+
+    header.appendChild(folderIcon);
+    header.appendChild(nameSpan);
+
+    const openBtn = document.createElement("button");
+    openBtn.className = "play-btn folder-open-btn";
+    openBtn.innerHTML = '<i class="mdi mdi-folder-open"></i> 開く';
+    openBtn.addEventListener("click", () => openFolder(dir.path));
+
+    item.appendChild(header);
+    item.appendChild(openBtn);
+
+    // ダブルクリックでフォルダを開く
+    item.addEventListener("dblclick", () => openFolder(dir.path));
+
+    grid.appendChild(item);
+  });
 
   filteredFiles.forEach((file, index) => {
     const item = document.createElement("div");
@@ -814,7 +979,8 @@ function updateFolderFilterOptions() {
   });
 
   // ブックマークされているフォルダのみを表示
-  bookmarks.forEach(bookmarkPath => {
+  bookmarks.forEach(bookmark => {
+    const bookmarkPath = bookmark.path;
     // ブックマークフォルダに該当するお気に入りファイルがあるかチェック
     let hasFiles = false;
     for (const folder of favoriteFolders) {
@@ -826,7 +992,8 @@ function updateFolderFilterOptions() {
     if (hasFiles) {
       const option = document.createElement("option");
       option.value = bookmarkPath;
-      option.textContent = getFolderName(bookmarkPath);
+      // 別名があれば別名を表示、なければフォルダ名を表示
+      option.textContent = getBookmarkDisplayName(bookmark);
       option.title = bookmarkPath;
       select.appendChild(option);
     }
@@ -1200,6 +1367,55 @@ function hideContextMenu() {
   menu.classList.remove("show");
 }
 
+// ブックマーク用コンテキストメニューを表示
+function showBookmarkContextMenu(x, y, bookmark) {
+  const menu = document.getElementById("bookmark-context-menu");
+  menu.dataset.path = bookmark.path;
+  menu.dataset.alias = bookmark.alias || "";
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.add("show");
+}
+
+// ブックマーク用コンテキストメニューを非表示
+function hideBookmarkContextMenu() {
+  const menu = document.getElementById("bookmark-context-menu");
+  menu.classList.remove("show");
+}
+
+// ブックマーク名前変更モーダルを表示
+function openBookmarkRenameModal(path, currentAlias) {
+  const modal = document.getElementById("bookmark-rename-modal");
+  const input = document.getElementById("bookmark-rename-input");
+  const folderNameLabel = document.getElementById("bookmark-rename-folder-name");
+
+  modal.dataset.path = path;
+  folderNameLabel.textContent = getFolderName(path);
+  input.value = currentAlias || "";
+  input.placeholder = getFolderName(path);
+
+  modal.classList.add("show");
+  input.focus();
+  input.select();
+}
+
+// ブックマーク名前変更モーダルを閉じる
+function closeBookmarkRenameModal() {
+  const modal = document.getElementById("bookmark-rename-modal");
+  modal.classList.remove("show");
+}
+
+// ブックマーク名前変更を保存
+function saveBookmarkRename() {
+  const modal = document.getElementById("bookmark-rename-modal");
+  const input = document.getElementById("bookmark-rename-input");
+  const path = modal.dataset.path;
+  const newAlias = input.value.trim();
+
+  updateBookmarkAlias(path, newAlias);
+  closeBookmarkRenameModal();
+}
+
 // エクスプローラで開く
 async function openInExplorer(path) {
   try {
@@ -1220,14 +1436,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // コンテキストメニュー
   const contextMenu = document.getElementById("context-menu");
-  const currentFolderEl = document.getElementById("current-folder");
-
-  currentFolderEl.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    if (currentFolder) {
-      showContextMenu(e.clientX, e.clientY, currentFolder);
-    }
-  });
 
   document.getElementById("context-open-explorer").addEventListener("click", () => {
     const path = contextMenu.dataset.path;
@@ -1237,10 +1445,107 @@ window.addEventListener("DOMContentLoaded", () => {
     hideContextMenu();
   });
 
+  // アドレスバーのイベントリスナー
+  const addressBar = document.querySelector(".address-bar");
+  const breadcrumbContainer = document.getElementById("breadcrumb-container");
+  const addressInput = document.getElementById("address-input");
+
+  // アドレスバーの空白部分をクリックで入力モードに
+  addressBar.addEventListener("click", (e) => {
+    if (e.target === addressBar || e.target === breadcrumbContainer) {
+      showAddressInput();
+    }
+  });
+
+  // 入力欄でEnterを押したらそのパスに移動
+  addressInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      const path = addressInput.value.trim();
+      if (path) {
+        try {
+          await openFolder(path);
+          hideAddressInput();
+        } catch (error) {
+          alert("指定されたパスを開けませんでした: " + error);
+        }
+      }
+    } else if (e.key === "Escape") {
+      hideAddressInput();
+    }
+  });
+
+  // 入力欄からフォーカスが外れたら入力モードを終了
+  addressInput.addEventListener("blur", () => {
+    hideAddressInput();
+  });
+
+  // パンくずリスト用コンテキストメニューのイベントリスナー
+  document.getElementById("breadcrumb-context-bookmark").addEventListener("click", () => {
+    const menu = document.getElementById("breadcrumb-context-menu");
+    const path = menu.dataset.path;
+    if (path) {
+      addBookmark(path);
+    }
+    hideBreadcrumbContextMenu();
+  });
+
+  document.getElementById("breadcrumb-context-open-explorer").addEventListener("click", () => {
+    const menu = document.getElementById("breadcrumb-context-menu");
+    const path = menu.dataset.path;
+    if (path) {
+      openInExplorer(path);
+    }
+    hideBreadcrumbContextMenu();
+  });
+
   // どこかをクリックしたらコンテキストメニューを閉じる
   document.addEventListener("click", (e) => {
     if (!contextMenu.contains(e.target)) {
       hideContextMenu();
+    }
+    // ブックマーク用コンテキストメニューも閉じる
+    const bookmarkContextMenu = document.getElementById("bookmark-context-menu");
+    if (!bookmarkContextMenu.contains(e.target)) {
+      hideBookmarkContextMenu();
+    }
+    // パンくずリスト用コンテキストメニューも閉じる
+    const breadcrumbContextMenu = document.getElementById("breadcrumb-context-menu");
+    if (!breadcrumbContextMenu.contains(e.target)) {
+      hideBreadcrumbContextMenu();
+    }
+  });
+
+  // ブックマーク用コンテキストメニューのイベントリスナー
+  document.getElementById("bookmark-context-rename").addEventListener("click", () => {
+    const menu = document.getElementById("bookmark-context-menu");
+    const path = menu.dataset.path;
+    const alias = menu.dataset.alias;
+    openBookmarkRenameModal(path, alias);
+    hideBookmarkContextMenu();
+  });
+
+  document.getElementById("bookmark-context-open-explorer").addEventListener("click", () => {
+    const menu = document.getElementById("bookmark-context-menu");
+    const path = menu.dataset.path;
+    if (path) {
+      openInExplorer(path);
+    }
+    hideBookmarkContextMenu();
+  });
+
+  // ブックマーク名前変更モーダルのイベントリスナー
+  document.getElementById("bookmark-rename-modal").addEventListener("click", (e) => {
+    if (e.target.id === "bookmark-rename-modal") {
+      closeBookmarkRenameModal();
+    }
+  });
+
+  document.getElementById("bookmark-rename-cancel-btn").addEventListener("click", closeBookmarkRenameModal);
+  document.getElementById("bookmark-rename-save-btn").addEventListener("click", saveBookmarkRename);
+
+  document.getElementById("bookmark-rename-input").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      saveBookmarkRename();
     }
   });
 

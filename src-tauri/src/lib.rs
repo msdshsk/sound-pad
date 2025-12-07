@@ -20,6 +20,18 @@ pub struct AudioFile {
     duration_seconds: Option<f64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DirectoryItem {
+    name: String,
+    path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DirectoryContents {
+    directories: Vec<DirectoryItem>,
+    files: Vec<AudioFile>,
+}
+
 #[derive(Clone)]
 pub struct AudioPlayer {
     sink: Arc<Mutex<Option<Sink>>>,
@@ -213,13 +225,14 @@ fn get_audio_duration(path: &Path) -> Option<f64> {
 }
 
 #[tauri::command]
-fn get_audio_files(directory: String) -> Result<Vec<AudioFile>, String> {
+fn get_audio_files(directory: String) -> Result<DirectoryContents, String> {
     let path = Path::new(&directory);
     if !path.exists() || !path.is_dir() {
         return Err("Invalid directory".to_string());
     }
 
     let mut audio_files = Vec::new();
+    let mut directories = Vec::new();
     // 注意: m4aファイルは一部のファイルで再生エラーが発生する可能性があります
     let audio_extensions = ["mp3", "wav", "ogg", "flac", "m4a", "aac"];
 
@@ -228,20 +241,36 @@ fn get_audio_files(directory: String) -> Result<Vec<AudioFile>, String> {
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
+        let entry_path = entry.path();
+
+        // ルートディレクトリ自体はスキップ
+        if entry_path == path {
+            continue;
+        }
+
+        if entry_path.is_dir() {
+            // サブディレクトリを追加
+            directories.push(DirectoryItem {
+                name: entry_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                path: entry_path.to_string_lossy().to_string(),
+            });
+        } else if entry_path.is_file() {
+            if let Some(ext) = entry_path.extension() {
                 if audio_extensions.contains(&ext.to_str().unwrap_or("").to_lowercase().as_str()) {
                     // 音声ファイルの長さを取得
-                    let duration_seconds = get_audio_duration(path);
+                    let duration_seconds = get_audio_duration(entry_path);
 
                     audio_files.push(AudioFile {
-                        name: path
+                        name: entry_path
                             .file_name()
                             .unwrap()
                             .to_string_lossy()
                             .to_string(),
-                        path: path.to_string_lossy().to_string(),
+                        path: entry_path.to_string_lossy().to_string(),
                         duration_seconds,
                     });
                 }
@@ -249,8 +278,14 @@ fn get_audio_files(directory: String) -> Result<Vec<AudioFile>, String> {
         }
     }
 
-    audio_files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(audio_files)
+    // ディレクトリとファイルをそれぞれアルファベット順にソート
+    directories.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    audio_files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(DirectoryContents {
+        directories,
+        files: audio_files,
+    })
 }
 
 #[tauri::command]

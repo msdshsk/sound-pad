@@ -86,6 +86,86 @@ body {
   flex-direction: column;
 }
 
+/* パンくずリスト型アドレスバー */
+.address-bar {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 4px 12px;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  cursor: text;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.address-bar:hover {
+  border-color: #ccc;
+  background: #f0f0f0;
+}
+
+.breadcrumb-container {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.breadcrumb-placeholder {
+  color: #999;
+  font-size: 0.85rem;
+}
+
+.breadcrumb-segment {
+  padding: 4px 8px;
+  background: #e8e8e8;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.breadcrumb-segment:hover {
+  background: #0066cc;
+  color: white;
+}
+
+.breadcrumb-segment:active {
+  background: #0052a3;
+}
+
+.breadcrumb-separator {
+  display: flex;
+  align-items: center;
+  color: #999;
+  font-size: 1rem;
+  padding: 0 2px;
+}
+
+.breadcrumb-separator i {
+  font-size: 1.1rem;
+}
+
+.address-input {
+  display: none;
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 0.9rem;
+  color: #333;
+  outline: none;
+  padding: 4px 0;
+}
+
+.address-input::placeholder {
+  color: #999;
+}
+
 .controls {
   display: flex;
   gap: 12px;
@@ -118,50 +198,6 @@ body {
 
 .primary-btn:active {
   background: #003d7a;
-}
-
-.current-folder {
-  flex: 1;
-  padding: 6px 10px;
-  background: #f5f5f5;
-  border-radius: 4px;
-  color: #555;
-  font-size: 0.85rem;
-  min-width: 200px;
-  border: 1px solid #ddd;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  position: relative;
-  cursor: default;
-}
-
-.current-folder.truncated:hover::after {
-  content: attr(data-fullpath);
-  position: absolute;
-  left: 0;
-  top: 100%;
-  margin-top: 4px;
-  padding: 8px 12px;
-  background: #333;
-  color: #fff;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  white-space: normal;
-  word-break: break-all;
-  max-width: 400px;
-  z-index: 1000;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.current-folder.truncated:hover::before {
-  content: "";
-  position: absolute;
-  left: 20px;
-  top: 100%;
-  border: 6px solid transparent;
-  border-bottom-color: #333;
-  z-index: 1001;
 }
 
 .search-box {
@@ -362,6 +398,62 @@ body {
 .audio-item.selected {
   border-color: #28a745;
   background: #f0fff4;
+}
+
+/* フォルダアイテムのスタイル */
+.audio-item.folder-item {
+  background: #fffbf0;
+  border-color: #e6d5a8;
+  cursor: pointer;
+}
+
+.audio-item.folder-item:hover {
+  border-color: #d4a843;
+  background: #fff8e1;
+  box-shadow: 0 2px 6px rgba(212, 168, 67, 0.2);
+}
+
+.folder-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  color: #d4a843;
+  flex-shrink: 0;
+}
+
+.folder-name {
+  font-weight: 500;
+  color: #6b5a2e;
+}
+
+.folder-open-btn {
+  background: #d4a843 !important;
+  color: white !important;
+}
+
+.folder-open-btn:hover {
+  background: #b8922e !important;
+}
+
+/* リストビューでのフォルダスタイル */
+.audio-grid.list-view .audio-item.folder-item {
+  flex-direction: row;
+  align-items: center;
+  padding: 6px 10px;
+  gap: 12px;
+  border-radius: 0;
+}
+
+.audio-grid.list-view .audio-item.folder-item .audio-item-header {
+  flex: 1;
+  min-width: 0;
+}
+
+.audio-grid.list-view .audio-item.folder-item .folder-open-btn {
+  width: 80px;
+  padding: 4px 8px;
+  flex-shrink: 0;
 }
 
 .audio-item-header {
@@ -1470,6 +1562,61 @@ body {
 .context-menu-item i {
   font-size: 1rem;
   color: #666;
+}
+
+/* ブックマーク名前変更モーダル */
+.bookmark-rename-modal-content {
+  max-width: 400px;
+}
+
+.bookmark-rename-info {
+  margin-bottom: 16px;
+  padding: 10px;
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+.bookmark-rename-info .label {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.bookmark-rename-info .folder-name {
+  display: block;
+  margin-top: 4px;
+  font-weight: 500;
+  color: #333;
+  word-break: break-all;
+}
+
+.bookmark-rename-input-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bookmark-rename-input-container label {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.bookmark-rename-input-container input {
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  transition: border-color 0.15s;
+}
+
+.bookmark-rename-input-container input:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);
+}
+
+/* ブックマークに別名がある場合の表示 */
+.shortcut-item .shortcut-path.has-alias {
+  font-weight: 500;
 }
 
 @media (max-width: 768px) {

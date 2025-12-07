@@ -28,8 +28,15 @@
     </div>
 
     <main class="container">
+      <!-- パンくずリスト型アドレスバー -->
+      <div class="address-bar">
+        <div id="breadcrumb-container" class="breadcrumb-container">
+          <span class="breadcrumb-placeholder">フォルダを選択してください</span>
+        </div>
+        <input type="text" id="address-input" class="address-input" placeholder="パスを入力..." />
+      </div>
+
       <div class="controls">
-        <div id="current-folder" class="current-folder">フォルダを選択してください</div>
         <div class="search-box">
           <i class="mdi mdi-magnify"></i>
           <input type="text" id="search-input" placeholder="ファイル名で検索（正規表現: /pattern/、ワイルドカード: *.mp3）" />
@@ -288,6 +295,56 @@
         <i class="mdi mdi-folder-open"></i>
         エクスプローラで開く
       </button>
+    </div>
+
+    <!-- ブックマーク用コンテキストメニュー -->
+    <div id="bookmark-context-menu" class="context-menu">
+      <button id="bookmark-context-rename" class="context-menu-item">
+        <i class="mdi mdi-pencil"></i>
+        名前を変更
+      </button>
+      <button id="bookmark-context-open-explorer" class="context-menu-item">
+        <i class="mdi mdi-folder-open"></i>
+        エクスプローラで開く
+      </button>
+    </div>
+
+    <!-- アドレスバー用コンテキストメニュー -->
+    <div id="breadcrumb-context-menu" class="context-menu">
+      <button id="breadcrumb-context-bookmark" class="context-menu-item">
+        <i class="mdi mdi-star-plus"></i>
+        ブックマークに追加
+      </button>
+      <button id="breadcrumb-context-open-explorer" class="context-menu-item">
+        <i class="mdi mdi-folder-open"></i>
+        エクスプローラで開く
+      </button>
+    </div>
+
+    <!-- ブックマーク名前変更モーダル -->
+    <div id="bookmark-rename-modal" class="modal bookmark-rename-modal">
+      <div class="modal-content bookmark-rename-modal-content">
+        <div class="modal-header">
+          <h2>
+            <i class="mdi mdi-pencil"></i>
+            ブックマーク名を変更
+          </h2>
+        </div>
+        <div class="modal-body">
+          <p class="bookmark-rename-info">
+            <span class="label">フォルダ名:</span>
+            <span id="bookmark-rename-folder-name" class="folder-name"></span>
+          </p>
+          <div class="bookmark-rename-input-container">
+            <label for="bookmark-rename-input">表示名（別名）:</label>
+            <input type="text" id="bookmark-rename-input" placeholder="空欄でフォルダ名を使用" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="bookmark-rename-save-btn" class="modal-btn primary">保存</button>
+          <button id="bookmark-rename-cancel-btn" class="modal-btn secondary">キャンセル</button>
+        </div>
+      </div>
     </div>
   </body>
 </html>
