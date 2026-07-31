@@ -14,17 +14,25 @@ let lastCopiedDestination = null;
 let searchQuery = "";
 let tagFilter = ""; // タグフィルター（空文字=すべて、__favorites__=お気に入りのみ、それ以外=タグ名）
 let favoriteFiles = new Map(); // Map<filePath, FavoriteItem>
-let isListView = false;
+let isListView = localStorage.getItem("sound-pad-view") !== "grid";
 let playbackUpdateInterval = null;
+let playbackUpdateInFlight = false;
 let allTags = [];
 let editingTagsFilePath = null;
 let editingTags = [];
 let selectedFavorites = new Set(); // お気に入り画面での選択状態
 let bulkTags = []; // 一括付与するタグ
+let focusedFilePath = null;
+let masterVolume = Number.parseInt(localStorage.getItem("sound-pad-volume") || "35", 10);
+let lastAudibleVolume = masterVolume > 0 ? masterVolume : 35;
+let playlistStore = null;
+let breadcrumbResizeObserver = null;
 
 // LocalStorage キー
 const HISTORY_KEY = "sound-pad-history";
 const BOOKMARKS_KEY = "sound-pad-bookmarks";
+const BOOKMARKS_RECOVERY_KEY = "sound-pad-bookmarks-recovered-v1";
+const THEME_KEY = "sound-pad-theme";
 
 // パスからフォルダ名を取得
 function getFolderName(path) {
@@ -139,6 +147,26 @@ function saveBookmarks(bookmarks) {
   localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(bookmarks));
 }
 
+function recoverBookmarksFromFavorites() {
+  if (localStorage.getItem(BOOKMARKS_RECOVERY_KEY)) return;
+  const recoveredPaths = new Set();
+  favoriteFiles.forEach(item => {
+    const parent = getParentFolder(item.file_path);
+    const folderName = parent ? getFolderName(parent).toUpperCase() : "";
+    if (folderName === "BGM" || folderName === "SE") recoveredPaths.add(parent);
+  });
+
+  const bookmarks = getBookmarks();
+  recoveredPaths.forEach(path => {
+    if (!bookmarks.some(bookmark => bookmark.path.toLowerCase() === path.toLowerCase())) {
+      bookmarks.push({ path, alias: null });
+    }
+  });
+  saveBookmarks(bookmarks);
+  localStorage.setItem(BOOKMARKS_RECOVERY_KEY, "1");
+  renderBookmarks();
+}
+
 // ブックマークに追加
 function addBookmark(path) {
   let bookmarks = getBookmarks();
@@ -184,10 +212,12 @@ async function getFavoriteFiles() {
     favorites.forEach(item => {
       favoriteFiles.set(item.file_path, item);
     });
+    recoverBookmarksFromFavorites();
     // タグ一覧も取得
     allTags = await invoke("get_all_tags");
     // メイン画面のタグフィルターも更新
     updateMainTagFilterOptions();
+    renderLibrarySidebar();
   } catch (error) {
     console.error("Error loading favorites:", error);
   }
@@ -203,6 +233,7 @@ async function addFavorite(filePath, tags = []) {
       added_at: Date.now().toString()
     });
     renderAudioFiles();
+    renderLibrarySidebar();
   } catch (error) {
     console.error("Error adding favorite:", error);
     alert("お気に入りの追加中にエラーが発生しました: " + error);
@@ -216,6 +247,7 @@ async function removeFavorite(filePath) {
     favoriteFiles.delete(filePath);
     renderAudioFiles();
     renderFavoritesList();
+    renderLibrarySidebar();
   } catch (error) {
     console.error("Error removing favorite:", error);
     alert("お気に入りの削除中にエラーが発生しました: " + error);
@@ -233,6 +265,10 @@ async function updateFavoriteTags(filePath, tags) {
     allTags = await invoke("get_all_tags");
     renderFavoritesList();
     updateTagFilterOptions();
+    updateMainTagFilterOptions();
+    renderAudioFiles();
+    updateInspector(filePath);
+    renderLibrarySidebar();
   } catch (error) {
     console.error("Error updating tags:", error);
     alert("タグの更新中にエラーが発生しました: " + error);
@@ -274,6 +310,20 @@ function renderHistory() {
 function renderBookmarks() {
   const bookmarks = getBookmarks();
   const container = document.getElementById("bookmarks-list");
+  const workspaceSelect = document.getElementById("workspace-select");
+
+  if (workspaceSelect) {
+    workspaceSelect.innerHTML = '<option value="">未選択</option>';
+    bookmarks.forEach(bookmark => {
+      const option = document.createElement("option");
+      option.value = bookmark.path;
+      option.textContent = getBookmarkDisplayName(bookmark);
+      option.title = bookmark.path;
+      workspaceSelect.appendChild(option);
+    });
+    workspaceSelect.value = bookmarks.some(bookmark => bookmark.path === currentFolder) ? currentFolder : "";
+  }
+  renderLibrarySidebar();
 
   if (bookmarks.length === 0) {
     container.innerHTML = '<p class="empty-message">ブックマークはありません</p>';
@@ -327,6 +377,17 @@ function renderBookmarks() {
 async function openFolder(path) {
   currentFolder = path;
   document.getElementById("bookmark-current-btn").disabled = false;
+  const sidebarFolder = document.querySelector("#sidebar-current-folder span");
+  if (sidebarFolder) {
+    sidebarFolder.textContent = getFolderName(path);
+    sidebarFolder.title = path;
+  }
+  const workspaceSelect = document.getElementById("workspace-select");
+  if (workspaceSelect) {
+    workspaceSelect.value = getBookmarks().some(bookmark => bookmark.path === path) ? path : "";
+  }
+  focusedFilePath = null;
+  updateInspector();
 
   // パンくずリストを更新
   renderBreadcrumb(path);
@@ -347,11 +408,24 @@ function renderBreadcrumb(path) {
   // Windowsのドライブレター対応（例: "C:"）
   let currentPath = "";
 
+  const ellipsis = document.createElement("button");
+  ellipsis.type = "button";
+  ellipsis.className = "breadcrumb-ellipsis";
+  ellipsis.textContent = "…";
+  ellipsis.title = "パスを入力";
+  ellipsis.hidden = true;
+  ellipsis.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showAddressInput();
+  });
+  container.appendChild(ellipsis);
+
   segments.forEach((segment, index) => {
     // 区切り文字を追加（最初以外）
     if (index > 0) {
       const separator = document.createElement("span");
       separator.className = "breadcrumb-separator";
+      separator.dataset.segmentIndex = String(index);
       separator.innerHTML = '<i class="mdi mdi-chevron-right"></i>';
       container.appendChild(separator);
     }
@@ -368,6 +442,7 @@ function renderBreadcrumb(path) {
 
     const segmentEl = document.createElement("span");
     segmentEl.className = "breadcrumb-segment";
+    segmentEl.dataset.segmentIndex = String(index);
     segmentEl.textContent = segment;
     segmentEl.dataset.path = segmentPath;
     segmentEl.title = segmentPath;
@@ -387,6 +462,45 @@ function renderBreadcrumb(path) {
 
     container.appendChild(segmentEl);
   });
+
+  if (!breadcrumbResizeObserver) {
+    breadcrumbResizeObserver = new ResizeObserver(() => collapseBreadcrumb());
+    breadcrumbResizeObserver.observe(container);
+  }
+  requestAnimationFrame(collapseBreadcrumb);
+}
+
+function collapseBreadcrumb() {
+  const container = document.getElementById("breadcrumb-container");
+  if (!container || container.offsetWidth === 0) return;
+  const segments = Array.from(container.querySelectorAll(".breadcrumb-segment"));
+  const separators = Array.from(container.querySelectorAll(".breadcrumb-separator"));
+  const ellipsis = container.querySelector(".breadcrumb-ellipsis");
+  if (!ellipsis || segments.length === 0) return;
+
+  segments.forEach(segment => {
+    segment.hidden = false;
+    segment.classList.remove("current-only");
+  });
+  separators.forEach(separator => { separator.hidden = false; });
+  ellipsis.hidden = true;
+
+  let firstVisibleIndex = 0;
+  const lastIndex = segments.length - 1;
+  while (container.scrollWidth > container.clientWidth && firstVisibleIndex < lastIndex) {
+    segments[firstVisibleIndex].hidden = true;
+    firstVisibleIndex += 1;
+    separators.forEach(separator => {
+      separator.hidden = Number(separator.dataset.segmentIndex) < firstVisibleIndex;
+    });
+    ellipsis.hidden = false;
+  }
+
+  if (container.scrollWidth > container.clientWidth) {
+    ellipsis.hidden = true;
+    separators.forEach(separator => { separator.hidden = true; });
+    segments[lastIndex].classList.add("current-only");
+  }
 }
 
 // アドレスバーの入力モードを切り替え
@@ -408,15 +522,20 @@ function hideAddressInput() {
 
   container.style.display = "flex";
   input.style.display = "none";
+  requestAnimationFrame(collapseBreadcrumb);
 }
 
 // パンくずリスト用コンテキストメニューを表示
 function showBreadcrumbContextMenu(x, y, path) {
+  const normalizedPath = path.replace(/\//g, "\\").toLowerCase();
+  const bookmark = getBookmarks().find(item => item.path.replace(/\//g, "\\").toLowerCase() === normalizedPath);
+  if (bookmark) {
+    showBookmarkContextMenu(x, y, bookmark);
+    return;
+  }
   const menu = document.getElementById("breadcrumb-context-menu");
   menu.dataset.path = path;
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  menu.classList.add("show");
+  positionContextMenu(menu, x, y);
 }
 
 // パンくずリスト用コンテキストメニューを非表示
@@ -456,6 +575,7 @@ async function loadAudioFiles(directory) {
     audioFiles = contents.files;
     subDirectories = contents.directories;
     renderAudioFiles();
+    renderLibrarySidebar();
   } catch (error) {
     console.error("Error loading audio files:", error);
     alert("ファイルの読み込み中にエラーが発生しました: " + error);
@@ -465,6 +585,9 @@ async function loadAudioFiles(directory) {
 // 音声ファイル一覧を表示
 function renderAudioFiles() {
   const grid = document.getElementById("audio-grid");
+  document.querySelector(".container")?.classList.toggle("grid-mode", !isListView);
+  const columnHeader = document.querySelector(".list-column-header");
+  if (columnHeader) columnHeader.hidden = !isListView;
 
   // ビュー切り替え
   if (isListView) {
@@ -538,6 +661,11 @@ function renderAudioFiles() {
 
     // ダブルクリックでフォルダを開く
     item.addEventListener("dblclick", () => openFolder(dir.path));
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showBreadcrumbContextMenu(event.clientX, event.clientY, dir.path);
+    });
 
     grid.appendChild(item);
   });
@@ -547,6 +675,12 @@ function renderAudioFiles() {
     item.className = "audio-item";
     item.dataset.index = index;
     item.dataset.path = file.path;
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      focusAudioFile(file.path);
+      showContextMenu(event.clientX, event.clientY, file.path);
+    });
 
     const header = document.createElement("div");
     header.className = "audio-item-header";
@@ -573,7 +707,9 @@ function renderAudioFiles() {
       ? '<i class="mdi mdi-star"></i>'
       : '<i class="mdi mdi-star-outline"></i>';
     favoriteBtn.title = isFavorite ? "お気に入りから削除" : "お気に入りに追加";
-    favoriteBtn.addEventListener("click", () => {
+    favoriteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      focusAudioFile(file.path);
       if (favoriteFiles.has(file.path)) {
         removeFavorite(file.path);
       } else {
@@ -592,6 +728,7 @@ function renderAudioFiles() {
     copyNameBtn.title = "ファイル名をコピー";
     copyNameBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
+      focusAudioFile(file.path);
       try {
         await navigator.clipboard.writeText(file.name);
         // コピー成功のフィードバック
@@ -607,7 +744,6 @@ function renderAudioFiles() {
     header.appendChild(checkbox);
     header.appendChild(favoriteBtn);
     header.appendChild(nameSpan);
-    header.appendChild(copyNameBtn);
 
     // タグを表示（お気に入りの場合のみ）
     const favoriteItem = favoriteFiles.get(file.path);
@@ -615,12 +751,10 @@ function renderAudioFiles() {
     tagsDiv.className = "audio-item-tags";
     if (favoriteItem && favoriteItem.tags && favoriteItem.tags.length > 0) {
       favoriteItem.tags.forEach(tag => {
-        const tagSpan = document.createElement("span");
-        tagSpan.className = "tag-badge";
-        tagSpan.textContent = tag;
-        tagsDiv.appendChild(tagSpan);
+        tagsDiv.appendChild(createTagBadge(tag));
       });
     }
+
 
     // 音声の長さを表示
     const durationDiv = document.createElement("div");
@@ -630,16 +764,35 @@ function renderAudioFiles() {
     const playBtn = document.createElement("button");
     playBtn.className = "play-btn";
     playBtn.innerHTML = '<i class="mdi mdi-play"></i> 再生';
-    playBtn.addEventListener("click", () => togglePlayAudio(file.path, file.duration_seconds, item, playBtn));
+    playBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      focusAudioFile(file.path);
+      togglePlayAudio(file.path, file.duration_seconds, item, playBtn);
+    });
+
+    const rowActions = document.createElement("div");
+    rowActions.className = "row-actions";
+    rowActions.appendChild(playBtn);
+    rowActions.appendChild(copyNameBtn);
 
     item.appendChild(header);
     item.appendChild(tagsDiv);
     item.appendChild(durationDiv);
-    item.appendChild(playBtn);
+    item.appendChild(rowActions);
     grid.appendChild(item);
+
+    item.addEventListener("click", (e) => {
+      if (!e.target.closest("button, input")) {
+        focusAudioFile(file.path);
+      }
+    });
 
     if (selectedFiles.has(file.path)) {
       item.classList.add("selected");
+    }
+
+    if (focusedFilePath === file.path) {
+      item.classList.add("focused");
     }
 
     // 現在再生中のファイルをハイライト
@@ -742,12 +895,33 @@ function updatePlayerPanel(path, duration) {
 
   const playPauseBtn = document.getElementById("player-play-pause-btn");
   playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
+  document.getElementById("player-panel").classList.add("has-track");
+}
+
+const TAG_HUES = [6, 28, 45, 88, 145, 178, 205, 222, 258, 292, 326, 348];
+
+function getTagHue(tag) {
+  let hash = 0;
+  for (const char of tag) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  return TAG_HUES[Math.abs(hash) % TAG_HUES.length];
+}
+
+function createTagBadge(tag, className = "tag-badge") {
+  const badge = document.createElement("span");
+  badge.className = className;
+  badge.textContent = tag;
+  badge.style.setProperty("--tag-hue", getTagHue(tag));
+  return badge;
 }
 
 // 再生状態を定期的に更新
 function startPlaybackUpdate() {
   stopPlaybackUpdate();
   playbackUpdateInterval = setInterval(async () => {
+    if (playbackUpdateInFlight) return;
+    playbackUpdateInFlight = true;
     try {
       const status = await invoke("get_playback_status");
       if (status.is_playing || status.is_paused) {
@@ -769,6 +943,8 @@ function startPlaybackUpdate() {
       }
     } catch (error) {
       console.error("Error getting playback status:", error);
+    } finally {
+      playbackUpdateInFlight = false;
     }
   }, 200);
 }
@@ -779,6 +955,7 @@ function stopPlaybackUpdate() {
     clearInterval(playbackUpdateInterval);
     playbackUpdateInterval = null;
   }
+  playbackUpdateInFlight = false;
 }
 
 // 再生UIをリセット
@@ -799,6 +976,7 @@ function resetPlayingUI() {
   }
   currentPlayingPath = null;
   currentPlayingDuration = null;
+  document.getElementById("player-panel").classList.remove("has-track");
 
   // lastPlayedPathがある場合は、ファイル名を表示したまま再生ボタンを有効に保つ
   if (lastPlayedPath) {
@@ -1012,6 +1190,305 @@ function getParentFolder(filePath) {
   return null;
 }
 
+function updateInspector(filePath = focusedFilePath) {
+  const empty = document.getElementById("inspector-empty");
+  const content = document.getElementById("inspector-content");
+  if (!empty || !content) return;
+
+  if (!filePath) {
+    empty.hidden = false;
+    content.hidden = true;
+    document.getElementById("playlist-add-focused-btn").disabled = true;
+    return;
+  }
+
+  focusedFilePath = filePath;
+  const fileName = filePath.split(/[\\/]/).pop();
+  const favoriteItem = favoriteFiles.get(filePath);
+  document.getElementById("inspector-filename").textContent = fileName;
+  document.getElementById("inspector-path").textContent = filePath;
+  const knownFile = audioFiles.find(file => file.path === filePath);
+  const parentFolder = getParentFolder(filePath);
+  document.getElementById("inspector-folder").textContent = parentFolder ? getFolderName(parentFolder) : "—";
+  document.getElementById("inspector-duration").textContent = knownFile ? formatDuration(knownFile.duration_seconds) : "—";
+
+  const tags = document.getElementById("inspector-tags");
+  tags.innerHTML = "";
+  if (favoriteItem?.tags?.length) {
+    favoriteItem.tags.forEach(tag => {
+      tags.appendChild(createTagBadge(tag));
+    });
+  } else {
+    const noTags = document.createElement("span");
+    noTags.className = "no-tags";
+    noTags.textContent = "タグなし";
+    tags.appendChild(noTags);
+  }
+
+  document.getElementById("inspector-edit-tags-btn").disabled = false;
+  document.getElementById("inspector-copy-name-btn").disabled = false;
+  document.getElementById("playlist-add-focused-btn").disabled = false;
+  empty.hidden = true;
+  content.hidden = false;
+}
+
+function getActivePlaylist() {
+  return playlistStore?.playlists?.find(playlist => playlist.id === playlistStore.active_playlist_id) || null;
+}
+
+async function loadPlaylists() {
+  try {
+    playlistStore = await invoke("get_playlists");
+    renderPlaylistPanel();
+  } catch (error) {
+    console.error("Error loading playlists:", error);
+  }
+}
+
+function renderPlaylistPanel() {
+  const select = document.getElementById("playlist-select");
+  const itemsContainer = document.getElementById("playlist-items");
+  if (!select || !itemsContainer || !playlistStore) return;
+
+  select.innerHTML = "";
+  playlistStore.playlists.forEach(playlist => {
+    const option = document.createElement("option");
+    option.value = playlist.id;
+    option.textContent = playlist.name;
+    select.appendChild(option);
+  });
+  select.value = playlistStore.active_playlist_id;
+
+  const playlist = getActivePlaylist();
+  const items = playlist?.items || [];
+  const totalDuration = items.reduce((total, item) => total + (item.duration_seconds || 0), 0);
+  document.getElementById("playlist-count").textContent = `${items.length}曲`;
+  document.getElementById("playlist-duration").textContent = `合計 ${formatDuration(totalDuration).replace("--:--", "0:00")}`;
+  document.getElementById("playlist-delete-btn").disabled = playlistStore.playlists.length <= 1;
+  document.getElementById("playlist-add-focused-btn").disabled = !focusedFilePath;
+
+  itemsContainer.innerHTML = "";
+  if (items.length === 0) {
+    itemsContainer.innerHTML = '<div class="playlist-empty"><i class="mdi mdi-playlist-music-outline"></i><span>BGMを選択して追加してください</span></div>';
+    return;
+  }
+
+  items.forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "playlist-item";
+    row.title = item.file_path;
+
+    const order = document.createElement("span");
+    order.className = "playlist-order";
+    order.textContent = String(index + 1).padStart(2, "0");
+
+    const info = document.createElement("button");
+    info.className = "playlist-item-info";
+    const fileName = item.file_path.split(/[\\/]/).pop();
+    info.innerHTML = `<strong></strong><span>${formatDuration(item.duration_seconds)}</span>`;
+    info.querySelector("strong").textContent = fileName;
+    info.addEventListener("click", () => {
+      focusAudioFile(item.file_path);
+      togglePlayAudio(item.file_path, item.duration_seconds, null, null);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "playlist-item-actions";
+    const actionButton = (icon, title, handler, disabled = false) => {
+      const button = document.createElement("button");
+      button.innerHTML = `<i class="mdi ${icon}"></i>`;
+      button.title = title;
+      button.disabled = disabled;
+      button.addEventListener("click", handler);
+      return button;
+    };
+    actions.append(
+      actionButton("mdi-play", "再生 / 停止", () => togglePlayAudio(item.file_path, item.duration_seconds, null, null)),
+      actionButton("mdi-content-copy", "ファイル名をコピー", () => navigator.clipboard.writeText(fileName)),
+      actionButton("mdi-chevron-up", "上へ", () => movePlaylistItem(item.file_path, -1), index === 0),
+      actionButton("mdi-chevron-down", "下へ", () => movePlaylistItem(item.file_path, 1), index === items.length - 1),
+      actionButton("mdi-close", "プレイリストから外す", () => removePlaylistItem(item.file_path))
+    );
+    row.append(order, info, actions);
+    itemsContainer.appendChild(row);
+  });
+}
+
+async function addFocusedToPlaylist() {
+  const playlist = getActivePlaylist();
+  if (!playlist || !focusedFilePath) return;
+  const knownFile = audioFiles.find(file => file.path === focusedFilePath);
+  try {
+    playlistStore = await invoke("add_playlist_item", {
+      playlistId: playlist.id,
+      filePath: focusedFilePath,
+      durationSeconds: knownFile?.duration_seconds ?? null
+    });
+    renderPlaylistPanel();
+  } catch (error) {
+    alert(String(error));
+  }
+}
+
+async function removePlaylistItem(filePath) {
+  const playlist = getActivePlaylist();
+  if (!playlist) return;
+  playlistStore = await invoke("remove_playlist_item", { playlistId: playlist.id, filePath });
+  renderPlaylistPanel();
+}
+
+async function movePlaylistItem(filePath, direction) {
+  const playlist = getActivePlaylist();
+  if (!playlist) return;
+  playlistStore = await invoke("move_playlist_item", { playlistId: playlist.id, filePath, direction });
+  renderPlaylistPanel();
+}
+
+function showInspectorTab(tab) {
+  const playlistActive = tab === "playlist";
+  document.getElementById("playlist-panel").hidden = !playlistActive;
+  document.getElementById("details-panel").hidden = playlistActive;
+  document.getElementById("playlist-tab-btn").classList.toggle("active", playlistActive);
+  document.getElementById("details-tab-btn").classList.toggle("active", !playlistActive);
+}
+
+function focusAudioFile(filePath) {
+  focusedFilePath = filePath;
+  document.querySelectorAll(".audio-item.focused").forEach(el => el.classList.remove("focused"));
+  const item = Array.from(document.querySelectorAll('.audio-item[data-path]'))
+    .find(el => el.dataset.path === filePath);
+  item?.classList.add("focused");
+  updateInspector(filePath);
+}
+
+function renderLibrarySidebar() {
+  const favoritesCount = document.getElementById("sidebar-favorites-count");
+  const historyCount = document.getElementById("sidebar-history-count");
+  if (favoritesCount) favoritesCount.textContent = favoriteFiles.size;
+  if (historyCount) historyCount.textContent = getHistory().length;
+
+  const currentFolderElement = document.getElementById("sidebar-current-folder");
+  if (currentFolderElement) {
+    currentFolderElement.querySelector(".sidebar-count")?.remove();
+    if (currentFolder) {
+      const currentBookmark = getBookmarks().find(bookmark => bookmark.path.toLowerCase() === currentFolder.toLowerCase());
+      const currentLabel = currentFolderElement.querySelector("span:not(.sidebar-count)");
+      if (currentLabel) {
+        currentLabel.textContent = currentBookmark ? getBookmarkDisplayName(currentBookmark) : getFolderName(currentFolder);
+        currentLabel.title = currentFolder;
+      }
+      const count = document.createElement("span");
+      count.className = "sidebar-count";
+      count.textContent = audioFiles.length;
+      currentFolderElement.appendChild(count);
+    }
+  }
+
+  const folderList = document.getElementById("sidebar-folder-list");
+  if (folderList) {
+    folderList.innerHTML = "";
+    const bookmarks = getBookmarks().slice(0, 8);
+    const normalizePath = path => path?.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() || "";
+    const currentNormalized = normalizePath(currentFolder);
+    const activeBookmark = bookmarks
+      .filter(bookmark => {
+        const bookmarkPath = normalizePath(bookmark.path);
+        return currentNormalized === bookmarkPath || currentNormalized.startsWith(bookmarkPath + "\\");
+      })
+      .sort((a, b) => b.path.length - a.path.length)[0];
+
+    const appendDirectoryButton = (directory, depth) => {
+      const button = document.createElement("button");
+      button.className = "sidebar-tree-item nested-folder";
+      button.classList.toggle("active", normalizePath(directory.path) === currentNormalized);
+      button.style.setProperty("--tree-depth", String(Math.min(depth, 4)));
+      button.title = directory.path;
+      button.innerHTML = '<i class="mdi mdi-folder-outline"></i>';
+      const label = document.createElement("span");
+      label.textContent = directory.name;
+      button.appendChild(label);
+      button.addEventListener("click", () => openFolder(directory.path));
+      button.addEventListener("contextmenu", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        showBreadcrumbContextMenu(event.clientX, event.clientY, directory.path);
+      });
+      folderList.appendChild(button);
+    };
+
+    bookmarks.forEach(bookmark => {
+      const button = document.createElement("button");
+      button.className = "sidebar-tree-item saved-folder";
+      button.classList.toggle("active", bookmark.path === currentFolder);
+      button.classList.toggle("branch-active", bookmark.path === activeBookmark?.path);
+      button.title = bookmark.path;
+      button.innerHTML = '<i class="mdi mdi-folder-star-outline"></i>';
+      const label = document.createElement("span");
+      label.textContent = getBookmarkDisplayName(bookmark);
+      button.appendChild(label);
+      button.addEventListener("click", () => openFolder(bookmark.path));
+      button.addEventListener("contextmenu", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        showBookmarkContextMenu(event.clientX, event.clientY, bookmark);
+      });
+      folderList.appendChild(button);
+
+      if (bookmark.path !== activeBookmark?.path) return;
+      const bookmarkNormalized = normalizePath(bookmark.path);
+      const relativePath = currentNormalized.slice(bookmarkNormalized.length).replace(/^\\+/, "");
+      const relativeSegments = relativePath ? relativePath.split("\\").filter(Boolean) : [];
+      let accumulatedPath = bookmark.path.replace(/[\\/]+$/, "");
+      relativeSegments.forEach((segment, index) => {
+        accumulatedPath += `\\${segment}`;
+        appendDirectoryButton({ name: segment, path: accumulatedPath }, index + 1);
+      });
+      subDirectories.slice(0, 12).forEach(directory => {
+        appendDirectoryButton(directory, relativeSegments.length + 1);
+      });
+    });
+
+    if (!activeBookmark) {
+      subDirectories.slice(0, 12).forEach(directory => appendDirectoryButton(directory, 1));
+    }
+  }
+
+  const tagCounts = new Map();
+  favoriteFiles.forEach(item => {
+    item.tags?.forEach(tag => tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1));
+  });
+  const tagList = document.getElementById("sidebar-tag-list");
+  if (!tagList) return;
+  tagList.innerHTML = "";
+  if (allTags.length === 0) {
+    tagList.innerHTML = '<span class="sidebar-empty">タグはありません</span>';
+    return;
+  }
+
+  allTags.slice(0, 14).forEach(tag => {
+    const button = document.createElement("button");
+    button.className = "sidebar-tag-item";
+    button.classList.toggle("active", tagFilter === tag);
+    const dot = document.createElement("span");
+    dot.className = "sidebar-tag-dot";
+    dot.style.setProperty("--tag-hue", getTagHue(tag));
+    const label = document.createElement("span");
+    label.className = "sidebar-tag-name";
+    label.textContent = tag;
+    const count = document.createElement("span");
+    count.className = "sidebar-count";
+    count.textContent = tagCounts.get(tag) || 0;
+    button.append(dot, label, count);
+    button.addEventListener("click", () => {
+      tagFilter = tagFilter === tag ? "" : tag;
+      document.getElementById("tag-filter-select").value = tagFilter;
+      renderAudioFiles();
+      renderLibrarySidebar();
+    });
+    tagList.appendChild(button);
+  });
+}
+
 // お気に入りリストを表示
 function renderFavoritesList() {
   const container = document.getElementById("favorites-list-container");
@@ -1074,10 +1551,7 @@ function renderFavoritesList() {
     tagsDiv.className = "favorites-item-tags";
     if (item.tags && item.tags.length > 0) {
       item.tags.forEach(tag => {
-        const tagSpan = document.createElement("span");
-        tagSpan.className = "tag-badge";
-        tagSpan.textContent = tag;
-        tagsDiv.appendChild(tagSpan);
+        tagsDiv.appendChild(createTagBadge(tag));
       });
     }
 
@@ -1094,9 +1568,14 @@ function renderFavoritesList() {
     playBtn.addEventListener("click", async () => {
       try {
         await invoke("play_audio", { path: item.file_path });
+        const knownFile = audioFiles.find(file => file.path === item.file_path);
+        const duration = knownFile?.duration_seconds ?? null;
         currentPlayingPath = item.file_path;
+        currentPlayingDuration = duration;
         lastPlayedPath = item.file_path;
-        updatePlayerPanel(item.file_path, null);
+        lastPlayedDuration = duration;
+        focusAudioFile(item.file_path);
+        updatePlayerPanel(item.file_path, duration);
         startPlaybackUpdate();
       } catch (error) {
         console.error("Error playing favorite:", error);
@@ -1188,6 +1667,7 @@ function renderBulkTags() {
   bulkTags.forEach(tag => {
     const tagSpan = document.createElement("span");
     tagSpan.className = "tag-chip";
+    tagSpan.style.setProperty("--tag-hue", getTagHue(tag));
     tagSpan.innerHTML = `${tag} <button class="tag-remove-btn"><i class="mdi mdi-close"></i></button>`;
     tagSpan.querySelector(".tag-remove-btn").addEventListener("click", () => {
       bulkTags = bulkTags.filter(t => t !== tag);
@@ -1213,6 +1693,7 @@ function renderBulkTagSuggestions() {
   availableTags.forEach(tag => {
     const tagSpan = document.createElement("span");
     tagSpan.className = "tag-suggestion";
+    tagSpan.style.setProperty("--tag-hue", getTagHue(tag));
     tagSpan.textContent = tag;
     tagSpan.addEventListener("click", () => {
       if (!bulkTags.includes(tag)) {
@@ -1296,6 +1777,7 @@ function renderCurrentTags() {
   editingTags.forEach(tag => {
     const tagSpan = document.createElement("span");
     tagSpan.className = "tag-chip";
+    tagSpan.style.setProperty("--tag-hue", getTagHue(tag));
     tagSpan.innerHTML = `${tag} <button class="tag-remove-btn"><i class="mdi mdi-close"></i></button>`;
     tagSpan.querySelector(".tag-remove-btn").addEventListener("click", () => {
       editingTags = editingTags.filter(t => t !== tag);
@@ -1320,6 +1802,7 @@ function renderTagSuggestions() {
   availableTags.forEach(tag => {
     const tagSpan = document.createElement("span");
     tagSpan.className = "tag-suggestion";
+    tagSpan.style.setProperty("--tag-hue", getTagHue(tag));
     tagSpan.textContent = tag;
     tagSpan.addEventListener("click", () => {
       if (!editingTags.includes(tag)) {
@@ -1356,9 +1839,12 @@ async function saveTagEdits() {
 function showContextMenu(x, y, path) {
   const menu = document.getElementById("context-menu");
   menu.dataset.path = path;
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  menu.classList.add("show");
+  const favoriteButton = document.getElementById("context-toggle-favorite");
+  const isFavorite = favoriteFiles.has(path);
+  favoriteButton.innerHTML = isFavorite
+    ? '<i class="mdi mdi-star-off-outline"></i>お気に入りから削除'
+    : '<i class="mdi mdi-star-outline"></i>お気に入りに追加';
+  positionContextMenu(menu, x, y);
 }
 
 // コンテキストメニューを非表示
@@ -1372,9 +1858,7 @@ function showBookmarkContextMenu(x, y, bookmark) {
   const menu = document.getElementById("bookmark-context-menu");
   menu.dataset.path = bookmark.path;
   menu.dataset.alias = bookmark.alias || "";
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  menu.classList.add("show");
+  positionContextMenu(menu, x, y);
 }
 
 // ブックマーク用コンテキストメニューを非表示
@@ -1426,16 +1910,182 @@ async function openInExplorer(path) {
   }
 }
 
+function hideAllContextMenus() {
+  document.querySelectorAll(".context-menu.show").forEach(menu => menu.classList.remove("show"));
+}
+
+function positionContextMenu(menu, x, y) {
+  hideAllContextMenus();
+  menu.classList.add("show");
+  const rect = menu.getBoundingClientRect();
+  const margin = 8;
+  menu.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))}px`;
+  menu.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))}px`;
+}
+
+function applyTheme(theme) {
+  const resolved = theme === "dark" ? "dark" : "light";
+  document.body.dataset.theme = resolved;
+  localStorage.setItem(THEME_KEY, resolved);
+  const button = document.getElementById("theme-toggle-btn");
+  if (button) {
+    button.innerHTML = resolved === "dark"
+      ? '<i class="mdi mdi-weather-sunny"></i>'
+      : '<i class="mdi mdi-weather-night"></i>';
+    button.title = resolved === "dark" ? "Lightテーマに切り替え" : "Darkテーマに切り替え";
+  }
+}
+
+function updateVolumeUI(volume) {
+  const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+  const slider = document.getElementById("player-volume");
+  const value = document.getElementById("player-volume-value");
+  const muteButton = document.getElementById("player-mute-btn");
+  if (slider) slider.value = clamped;
+  if (value) value.textContent = `${clamped}%`;
+  if (muteButton) {
+    const icon = clamped === 0 ? "mdi-volume-off" : clamped < 50 ? "mdi-volume-medium" : "mdi-volume-high";
+    muteButton.innerHTML = `<i class="mdi ${icon}"></i>`;
+    muteButton.classList.toggle("muted", clamped === 0);
+  }
+}
+
+async function setMasterVolume(volume) {
+  masterVolume = Math.max(0, Math.min(100, Math.round(volume)));
+  if (masterVolume > 0) lastAudibleVolume = masterVolume;
+  localStorage.setItem("sound-pad-volume", String(masterVolume));
+  updateVolumeUI(masterVolume);
+  try {
+    await invoke("set_master_volume", { volume: masterVolume / 100 });
+  } catch (error) {
+    console.error("Error setting master volume:", error);
+  }
+}
+
 // イベントリスナーの設定
 window.addEventListener("DOMContentLoaded", () => {
+  const savedTheme = localStorage.getItem(THEME_KEY) || "light";
+  applyTheme(savedTheme);
+  setMasterVolume(Number.isFinite(masterVolume) ? masterVolume : 35);
+
   document.getElementById("select-folder-btn").addEventListener("click", selectFolder);
   document.getElementById("bookmark-current-btn").addEventListener("click", bookmarkCurrent);
   document.getElementById("copy-selected-btn").addEventListener("click", copySelected);
   document.getElementById("modal-ok-btn").addEventListener("click", closeModal);
   document.getElementById("modal-open-folder-btn").addEventListener("click", openCopiedFolder);
 
+  document.getElementById("theme-toggle-btn").addEventListener("click", () => {
+    applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+  });
+
+  document.getElementById("workspace-select").addEventListener("change", (event) => {
+    if (event.target.value) openFolder(event.target.value);
+  });
+
+  document.getElementById("playlist-tab-btn").addEventListener("click", () => showInspectorTab("playlist"));
+  document.getElementById("details-tab-btn").addEventListener("click", () => showInspectorTab("details"));
+  document.getElementById("playlist-add-focused-btn").addEventListener("click", addFocusedToPlaylist);
+  document.getElementById("playlist-select").addEventListener("change", async event => {
+    try {
+      playlistStore = await invoke("set_active_playlist", { playlistId: event.target.value });
+      renderPlaylistPanel();
+    } catch (error) {
+      alert(String(error));
+    }
+  });
+  document.getElementById("playlist-new-btn").addEventListener("click", async () => {
+    const name = prompt("新しいプレイリスト名", "今回のセットリスト");
+    if (!name?.trim()) return;
+    try {
+      playlistStore = await invoke("create_playlist", { name: name.trim() });
+      renderPlaylistPanel();
+    } catch (error) {
+      alert(String(error));
+    }
+  });
+  document.getElementById("playlist-rename-btn").addEventListener("click", async () => {
+    const playlist = getActivePlaylist();
+    if (!playlist) return;
+    const name = prompt("セットリスト名を変更", playlist.name);
+    if (!name?.trim() || name.trim() === playlist.name) return;
+    try {
+      playlistStore = await invoke("rename_playlist", {
+        playlistId: playlist.id,
+        name: name.trim()
+      });
+      renderPlaylistPanel();
+    } catch (error) {
+      alert(String(error));
+    }
+  });
+  document.getElementById("playlist-delete-btn").addEventListener("click", async () => {
+    const playlist = getActivePlaylist();
+    if (!playlist || !confirm(`「${playlist.name}」を削除しますか？`)) return;
+    try {
+      playlistStore = await invoke("delete_playlist", { playlistId: playlist.id });
+      renderPlaylistPanel();
+    } catch (error) {
+      alert(String(error));
+    }
+  });
+
+  document.getElementById("player-volume").addEventListener("input", (e) => {
+    setMasterVolume(Number.parseInt(e.target.value, 10));
+  });
+
+  document.getElementById("player-mute-btn").addEventListener("click", () => {
+    setMasterVolume(masterVolume === 0 ? lastAudibleVolume : 0);
+  });
+
+  document.getElementById("inspector-copy-name-btn").addEventListener("click", async () => {
+    if (!focusedFilePath) return;
+    const fileName = focusedFilePath.split(/[\\/]/).pop();
+    await navigator.clipboard.writeText(fileName);
+  });
+
+  document.getElementById("inspector-edit-tags-btn").addEventListener("click", async () => {
+    if (!focusedFilePath) return;
+    if (!favoriteFiles.has(focusedFilePath)) {
+      await addFavorite(focusedFilePath);
+    }
+    const item = favoriteFiles.get(focusedFilePath);
+    openTagEditModal(focusedFilePath, item?.tags || []);
+  });
+
   // コンテキストメニュー
   const contextMenu = document.getElementById("context-menu");
+
+  document.getElementById("context-play").addEventListener("click", () => {
+    const path = contextMenu.dataset.path;
+    const file = audioFiles.find(item => item.path === path);
+    if (path) togglePlayAudio(path, file?.duration_seconds ?? null, null, null);
+    hideContextMenu();
+  });
+
+  document.getElementById("context-copy-name").addEventListener("click", async () => {
+    const path = contextMenu.dataset.path;
+    if (path) await navigator.clipboard.writeText(path.split(/[\\/]/).pop());
+    hideContextMenu();
+  });
+
+  document.getElementById("context-toggle-favorite").addEventListener("click", async () => {
+    const path = contextMenu.dataset.path;
+    if (!path) return;
+    if (favoriteFiles.has(path)) {
+      await removeFavorite(path);
+    } else {
+      await addFavorite(path);
+    }
+    hideContextMenu();
+  });
+
+  document.getElementById("context-edit-tags").addEventListener("click", async () => {
+    const path = contextMenu.dataset.path;
+    if (!path) return;
+    if (!favoriteFiles.has(path)) await addFavorite(path);
+    openTagEditModal(path, favoriteFiles.get(path)?.tags || []);
+    hideContextMenu();
+  });
 
   document.getElementById("context-open-explorer").addEventListener("click", () => {
     const path = contextMenu.dataset.path;
@@ -1443,6 +2093,13 @@ window.addEventListener("DOMContentLoaded", () => {
       openInExplorer(path);
     }
     hideContextMenu();
+  });
+
+  document.getElementById("sidebar-current-folder").addEventListener("contextmenu", event => {
+    if (!currentFolder) return;
+    event.preventDefault();
+    event.stopPropagation();
+    showBreadcrumbContextMenu(event.clientX, event.clientY, currentFolder);
   });
 
   // アドレスバーのイベントリスナー
@@ -1515,6 +2172,12 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  document.addEventListener("contextmenu", event => {
+    if (event.defaultPrevented || event.target.closest("input, textarea")) return;
+    event.preventDefault();
+    hideAllContextMenus();
+  });
+
   // ブックマーク用コンテキストメニューのイベントリスナー
   document.getElementById("bookmark-context-rename").addEventListener("click", () => {
     const menu = document.getElementById("bookmark-context-menu");
@@ -1530,6 +2193,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (path) {
       openInExplorer(path);
     }
+    hideBookmarkContextMenu();
+  });
+
+  document.getElementById("bookmark-context-remove").addEventListener("click", () => {
+    const menu = document.getElementById("bookmark-context-menu");
+    if (menu.dataset.path) removeBookmark(menu.dataset.path);
     hideBookmarkContextMenu();
   });
 
@@ -1576,14 +2245,19 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("tag-filter-select").addEventListener("change", (e) => {
     tagFilter = e.target.value;
     renderAudioFiles();
+    renderLibrarySidebar();
   });
 
   // ビュー切り替え
   const gridViewBtn = document.getElementById("grid-view-btn");
   const listViewBtn = document.getElementById("list-view-btn");
 
+  gridViewBtn.classList.toggle("active", !isListView);
+  listViewBtn.classList.toggle("active", isListView);
+
   gridViewBtn.addEventListener("click", () => {
     isListView = false;
+    localStorage.setItem("sound-pad-view", "grid");
     gridViewBtn.classList.add("active");
     listViewBtn.classList.remove("active");
     renderAudioFiles();
@@ -1591,6 +2265,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   listViewBtn.addEventListener("click", () => {
     isListView = true;
+    localStorage.setItem("sound-pad-view", "list");
     listViewBtn.classList.add("active");
     gridViewBtn.classList.remove("active");
     renderAudioFiles();
@@ -1736,38 +2411,52 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  seekbar.addEventListener("mousedown", () => {
+  const commitSeek = async () => {
+    if (!currentPlayingPath) return;
+    try {
+      const status = await invoke("get_playback_status");
+      if (!status.is_playing && !status.is_paused) return;
+      const position = Number.parseFloat(seekbar.value);
+      const path = currentPlayingPath;
+      await invoke("seek_audio", { path, position });
+      if (status.is_paused) {
+        await invoke("pause_audio");
+      }
+    } catch (error) {
+      console.error("Error seeking:", error);
+    }
+  };
+
+  seekbar.addEventListener("pointerdown", (e) => {
     seekbar.dataset.dragging = "true";
+    seekbar.setPointerCapture?.(e.pointerId);
   });
 
-  seekbar.addEventListener("mouseup", async () => {
-    delete seekbar.dataset.dragging;
-    if (currentPlayingPath) {
-      // 再生状態を確認してからシーク
-      try {
-        const status = await invoke("get_playback_status");
-        if (status.is_playing || status.is_paused) {
-          const position = parseFloat(seekbar.value);
-          await invoke("seek_audio", { path: currentPlayingPath, position });
-        }
-      } catch (error) {
-        console.error("Error seeking:", error);
-      }
+  seekbar.addEventListener("input", () => {
+    if (seekbar.dataset.dragging) {
+      document.getElementById("player-current-time").textContent = formatDuration(Number.parseFloat(seekbar.value));
     }
   });
 
+  seekbar.addEventListener("pointerup", async () => {
+    if (!seekbar.dataset.dragging) return;
+    delete seekbar.dataset.dragging;
+    seekbar.dataset.committedByPointer = "true";
+    setTimeout(() => delete seekbar.dataset.committedByPointer, 0);
+    await commitSeek();
+  });
+
+  seekbar.addEventListener("pointercancel", () => {
+    delete seekbar.dataset.dragging;
+  });
+
   seekbar.addEventListener("change", async () => {
-    if (currentPlayingPath && !seekbar.dataset.dragging) {
-      // 再生状態を確認してからシーク
-      try {
-        const status = await invoke("get_playback_status");
-        if (status.is_playing || status.is_paused) {
-          const position = parseFloat(seekbar.value);
-          await invoke("seek_audio", { path: currentPlayingPath, position });
-        }
-      } catch (error) {
-        console.error("Error seeking:", error);
-      }
+    if (seekbar.dataset.committedByPointer) {
+      delete seekbar.dataset.committedByPointer;
+      return;
+    }
+    if (!seekbar.dataset.dragging) {
+      await commitSeek();
     }
   });
 
@@ -1775,6 +2464,7 @@ window.addEventListener("DOMContentLoaded", () => {
   renderHistory();
   renderBookmarks();
   getFavoriteFiles();
+  loadPlaylists();
 
   // 音声再生終了イベントをリッスン
   listen("audio-finished", (event) => {

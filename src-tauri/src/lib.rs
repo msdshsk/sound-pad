@@ -42,6 +42,7 @@ pub struct AudioPlayer {
     start_position: Arc<Mutex<f64>>,
     is_paused: Arc<Mutex<bool>>,
     paused_position: Arc<Mutex<f64>>,
+    volume: Arc<Mutex<f32>>,
 }
 
 // Safe because all fields are protected by Mutex
@@ -59,6 +60,7 @@ impl AudioPlayer {
             start_position: Arc::new(Mutex::new(0.0)),
             is_paused: Arc::new(Mutex::new(false)),
             paused_position: Arc::new(Mutex::new(0.0)),
+            volume: Arc::new(Mutex::new(0.35)),
         }
     }
 
@@ -81,6 +83,7 @@ impl AudioPlayer {
 
         let stream = OutputStreamBuilder::open_default_stream().map_err(|e| e.to_string())?;
         let sink = Sink::connect_new(stream.mixer());
+        sink.set_volume(*self.volume.lock().unwrap());
 
         // スキップが指定されている場合
         let skip_duration = skip_seconds.unwrap_or(0.0);
@@ -116,7 +119,10 @@ impl AudioPlayer {
                 }
             }
         }
-        Err(format!("Failed to open file after {} retries: {}", max_retries, last_error))
+        Err(format!(
+            "Failed to open file after {} retries: {}",
+            max_retries, last_error
+        ))
     }
 
     pub fn stop(&self) {
@@ -184,6 +190,18 @@ impl AudioPlayer {
 
     pub fn is_paused(&self) -> bool {
         *self.is_paused.lock().unwrap()
+    }
+
+    pub fn set_volume(&self, volume: f32) {
+        let clamped = volume.clamp(0.0, 1.0);
+        *self.volume.lock().unwrap() = clamped;
+        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+            sink.set_volume(clamped);
+        }
+    }
+
+    pub fn get_volume(&self) -> f32 {
+        *self.volume.lock().unwrap()
     }
 }
 
@@ -289,7 +307,11 @@ fn get_audio_files(directory: String) -> Result<DirectoryContents, String> {
 }
 
 #[tauri::command]
-fn play_audio(path: String, state: tauri::State<AudioPlayer>, app: tauri::AppHandle) -> Result<(), String> {
+fn play_audio(
+    path: String,
+    state: tauri::State<AudioPlayer>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // 音声の長さを取得
     let duration = get_audio_duration(Path::new(&path));
 
@@ -354,7 +376,12 @@ fn resume_audio(state: tauri::State<AudioPlayer>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn seek_audio(path: String, position: f64, state: tauri::State<AudioPlayer>, app: tauri::AppHandle) -> Result<(), String> {
+fn seek_audio(
+    path: String,
+    position: f64,
+    state: tauri::State<AudioPlayer>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // 音声の長さを取得
     let duration = get_audio_duration(Path::new(&path));
 
@@ -370,28 +397,26 @@ fn seek_audio(path: String, position: f64, state: tauri::State<AudioPlayer>, app
     let app_handle = app.clone();
     let file_path = path.clone();
 
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_millis(100));
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(100));
 
-            let is_empty = {
-                if let Some(sink) = player.sink.lock().unwrap().as_ref() {
-                    sink.empty()
-                } else {
-                    true
-                }
-            };
-
-            if is_empty {
-                let current = player.current_path.lock().unwrap().clone();
-
-                if current.as_deref() == Some(&file_path) {
-                    let _ = app_handle.emit("audio-finished", file_path.clone());
-                    *player.current_path.lock().unwrap() = None;
-                    *player.current_duration.lock().unwrap() = None;
-                }
-                break;
+        let is_empty = {
+            if let Some(sink) = player.sink.lock().unwrap().as_ref() {
+                sink.empty()
+            } else {
+                true
             }
+        };
+
+        if is_empty {
+            let current = player.current_path.lock().unwrap().clone();
+
+            if current.as_deref() == Some(&file_path) {
+                let _ = app_handle.emit("audio-finished", file_path.clone());
+                *player.current_path.lock().unwrap() = None;
+                *player.current_duration.lock().unwrap() = None;
+            }
+            break;
         }
     });
 
@@ -404,6 +429,7 @@ struct PlaybackStatus {
     duration: Option<f64>,
     is_playing: bool,
     is_paused: bool,
+    volume: f32,
 }
 
 #[tauri::command]
@@ -412,13 +438,21 @@ fn get_playback_status(state: tauri::State<AudioPlayer>) -> Result<PlaybackStatu
     let duration = state.inner().current_duration.lock().unwrap().clone();
     let is_playing = state.inner().is_playing();
     let is_paused = state.inner().is_paused();
+    let volume = state.inner().get_volume();
 
     Ok(PlaybackStatus {
         position,
         duration,
         is_playing,
         is_paused,
+        volume,
     })
+}
+
+#[tauri::command]
+fn set_master_volume(volume: f32, state: tauri::State<AudioPlayer>) -> Result<(), String> {
+    state.inner().set_volume(volume);
+    Ok(())
 }
 
 #[tauri::command]
@@ -453,10 +487,7 @@ fn copy_files(files: Vec<String>, destination: String) -> Result<Vec<String>, St
 
 // お気に入りファイルのパスを取得
 fn get_favorites_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
     // ディレクトリが存在しない場合は作成
     if !app_data_dir.exists() {
@@ -512,17 +543,16 @@ impl FavoritesV2 {
         // V1形式として読み込み、V2に変換
         if let Ok(v1) = serde_json::from_str::<FavoritesV1>(&content) {
             let now = chrono_now();
-            let items: Vec<FavoriteItem> = v1.files.into_iter().map(|file_path| {
-                FavoriteItem {
+            let items: Vec<FavoriteItem> = v1
+                .files
+                .into_iter()
+                .map(|file_path| FavoriteItem {
                     file_path,
                     tags: Vec::new(),
                     added_at: now.clone(),
-                }
-            }).collect();
-            return Ok(FavoritesV2 {
-                version: 2,
-                items,
-            });
+                })
+                .collect();
+            return Ok(FavoritesV2 { version: 2, items });
         }
 
         // どちらの形式でも読み込めない場合は新規作成
@@ -549,6 +579,237 @@ fn chrono_now() -> String {
     format!("{}", now)
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlaylistItem {
+    pub file_path: String,
+    pub duration_seconds: Option<f64>,
+    pub added_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Playlist {
+    pub id: String,
+    pub name: String,
+    pub items: Vec<PlaylistItem>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlaylistStore {
+    pub version: u32,
+    pub active_playlist_id: String,
+    pub playlists: Vec<Playlist>,
+}
+
+impl PlaylistStore {
+    fn new() -> Self {
+        let id = format!("playlist-{}", timestamp_millis());
+        Self {
+            version: 1,
+            active_playlist_id: id.clone(),
+            playlists: vec![Playlist {
+                id,
+                name: "今回のセットリスト".to_string(),
+                items: Vec::new(),
+                created_at: chrono_now(),
+            }],
+        }
+    }
+
+    fn load(path: &Path) -> Result<Self, String> {
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let store: Self = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        if store.playlists.is_empty() {
+            Ok(Self::new())
+        } else {
+            Ok(store)
+        }
+    }
+
+    fn save(&self, path: &Path) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(path, content).map_err(|e| e.to_string())
+    }
+}
+
+fn timestamp_millis() -> u128 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn get_playlists_file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("playlists.json"))
+}
+
+#[tauri::command]
+fn get_playlists(app: AppHandle) -> Result<PlaylistStore, String> {
+    let path = get_playlists_file_path(&app)?;
+    let store = PlaylistStore::load(&path)?;
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn create_playlist(name: String, app: AppHandle) -> Result<PlaylistStore, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("プレイリスト名を入力してください".to_string());
+    }
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    let id = format!("playlist-{}", timestamp_millis());
+    store.playlists.push(Playlist {
+        id: id.clone(),
+        name: trimmed.to_string(),
+        items: Vec::new(),
+        created_at: chrono_now(),
+    });
+    store.active_playlist_id = id;
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn rename_playlist(
+    playlist_id: String,
+    name: String,
+    app: AppHandle,
+) -> Result<PlaylistStore, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("セットリスト名を入力してください".to_string());
+    }
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    let playlist = store
+        .playlists
+        .iter_mut()
+        .find(|playlist| playlist.id == playlist_id)
+        .ok_or_else(|| "セットリストが見つかりません".to_string())?;
+    playlist.name = trimmed.to_string();
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn delete_playlist(playlist_id: String, app: AppHandle) -> Result<PlaylistStore, String> {
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    store
+        .playlists
+        .retain(|playlist| playlist.id != playlist_id);
+    if store.playlists.is_empty() {
+        store = PlaylistStore::new();
+    } else if store.active_playlist_id == playlist_id {
+        store.active_playlist_id = store.playlists[0].id.clone();
+    }
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn set_active_playlist(playlist_id: String, app: AppHandle) -> Result<PlaylistStore, String> {
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    if !store
+        .playlists
+        .iter()
+        .any(|playlist| playlist.id == playlist_id)
+    {
+        return Err("プレイリストが見つかりません".to_string());
+    }
+    store.active_playlist_id = playlist_id;
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn add_playlist_item(
+    playlist_id: String,
+    file_path: String,
+    duration_seconds: Option<f64>,
+    app: AppHandle,
+) -> Result<PlaylistStore, String> {
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    let playlist = store
+        .playlists
+        .iter_mut()
+        .find(|playlist| playlist.id == playlist_id)
+        .ok_or_else(|| "プレイリストが見つかりません".to_string())?;
+    if playlist
+        .items
+        .iter()
+        .any(|item| item.file_path == file_path)
+    {
+        return Err("この曲はすでにプレイリストに入っています".to_string());
+    }
+    playlist.items.push(PlaylistItem {
+        file_path,
+        duration_seconds,
+        added_at: chrono_now(),
+    });
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn remove_playlist_item(
+    playlist_id: String,
+    file_path: String,
+    app: AppHandle,
+) -> Result<PlaylistStore, String> {
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    let playlist = store
+        .playlists
+        .iter_mut()
+        .find(|playlist| playlist.id == playlist_id)
+        .ok_or_else(|| "プレイリストが見つかりません".to_string())?;
+    playlist.items.retain(|item| item.file_path != file_path);
+    store.save(&path)?;
+    Ok(store)
+}
+
+#[tauri::command]
+fn move_playlist_item(
+    playlist_id: String,
+    file_path: String,
+    direction: i32,
+    app: AppHandle,
+) -> Result<PlaylistStore, String> {
+    let path = get_playlists_file_path(&app)?;
+    let mut store = PlaylistStore::load(&path)?;
+    let playlist = store
+        .playlists
+        .iter_mut()
+        .find(|playlist| playlist.id == playlist_id)
+        .ok_or_else(|| "プレイリストが見つかりません".to_string())?;
+    let index = playlist
+        .items
+        .iter()
+        .position(|item| item.file_path == file_path)
+        .ok_or_else(|| "曲が見つかりません".to_string())?;
+    let target = if direction < 0 {
+        index.saturating_sub(1)
+    } else {
+        (index + 1).min(playlist.items.len().saturating_sub(1))
+    };
+    if index != target {
+        playlist.items.swap(index, target);
+    }
+    store.save(&path)?;
+    Ok(store)
+}
+
 #[tauri::command]
 fn get_favorites(app: AppHandle) -> Result<Vec<FavoriteItem>, String> {
     let favorites_path = get_favorites_file_path(&app)?;
@@ -557,12 +818,20 @@ fn get_favorites(app: AppHandle) -> Result<Vec<FavoriteItem>, String> {
 }
 
 #[tauri::command]
-fn add_favorite(file_path: String, tags: Option<Vec<String>>, app: AppHandle) -> Result<(), String> {
+fn add_favorite(
+    file_path: String,
+    tags: Option<Vec<String>>,
+    app: AppHandle,
+) -> Result<(), String> {
     let favorites_path = get_favorites_file_path(&app)?;
     let mut favorites = FavoritesV2::load(&favorites_path)?;
 
     // 既に存在するか確認
-    if !favorites.items.iter().any(|item| item.file_path == file_path) {
+    if !favorites
+        .items
+        .iter()
+        .any(|item| item.file_path == file_path)
+    {
         favorites.items.push(FavoriteItem {
             file_path,
             tags: tags.unwrap_or_default(),
@@ -586,11 +855,19 @@ fn remove_favorite(file_path: String, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn update_favorite_tags(file_path: String, tags: Vec<String>, app: AppHandle) -> Result<(), String> {
+fn update_favorite_tags(
+    file_path: String,
+    tags: Vec<String>,
+    app: AppHandle,
+) -> Result<(), String> {
     let favorites_path = get_favorites_file_path(&app)?;
     let mut favorites = FavoritesV2::load(&favorites_path)?;
 
-    if let Some(item) = favorites.items.iter_mut().find(|item| item.file_path == file_path) {
+    if let Some(item) = favorites
+        .items
+        .iter_mut()
+        .find(|item| item.file_path == file_path)
+    {
         item.tags = tags;
         favorites.save(&favorites_path)?;
     } else {
@@ -605,7 +882,8 @@ fn get_all_tags(app: AppHandle) -> Result<Vec<String>, String> {
     let favorites_path = get_favorites_file_path(&app)?;
     let favorites = FavoritesV2::load(&favorites_path)?;
 
-    let mut all_tags: Vec<String> = favorites.items
+    let mut all_tags: Vec<String> = favorites
+        .items
         .iter()
         .flat_map(|item| item.tags.clone())
         .collect();
@@ -650,7 +928,10 @@ fn open_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let dir = if path_obj.is_file() {
-            path_obj.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or(path.clone())
+            path_obj
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or(path.clone())
         } else {
             path.clone()
         };
@@ -678,6 +959,7 @@ pub fn run() {
             resume_audio,
             seek_audio,
             get_playback_status,
+            set_master_volume,
             rename_file,
             copy_files,
             get_favorites,
@@ -685,6 +967,14 @@ pub fn run() {
             remove_favorite,
             update_favorite_tags,
             get_all_tags,
+            get_playlists,
+            create_playlist,
+            rename_playlist,
+            delete_playlist,
+            set_active_playlist,
+            add_playlist_item,
+            remove_playlist_item,
+            move_playlist_item,
             open_in_explorer
         ])
         .run(tauri::generate_context!())

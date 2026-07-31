@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="studio.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sound Pad - 音声ファイルランチャー</title>
@@ -10,95 +11,187 @@
   </head>
 
   <body>
-    <!-- 左側アクティビティバー -->
-    <div class="activity-bar">
-      <button id="drawer-toggle-btn" class="activity-icon" title="履歴・ブックマーク">
-        <i class="mdi mdi-folder-clock"></i>
-      </button>
-      <button id="select-folder-btn" class="activity-icon" title="フォルダを選択">
-        <i class="mdi mdi-folder-open"></i>
-      </button>
-      <button id="bookmark-current-btn" class="activity-icon" disabled title="ブックマークに追加">
-        <i class="mdi mdi-star-plus"></i>
-      </button>
-      <div class="activity-spacer"></div>
-      <button id="favorites-screen-btn" class="activity-icon" title="お気に入り管理">
-        <i class="mdi mdi-heart"></i>
-      </button>
-    </div>
-
-    <main class="container">
-      <!-- パンくずリスト型アドレスバー -->
-      <div class="address-bar">
-        <div id="breadcrumb-container" class="breadcrumb-container">
-          <span class="breadcrumb-placeholder">フォルダを選択してください</span>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="app-brand">
+          <span class="brand-mark"><i class="mdi mdi-waveform"></i></span>
+          <strong>Sound Pad</strong>
         </div>
-        <input type="text" id="address-input" class="address-input" placeholder="パスを入力..." />
-      </div>
-
-      <div class="controls">
-        <div class="search-box">
-          <i class="mdi mdi-magnify"></i>
-          <input type="text" id="search-input" placeholder="ファイル名で検索（正規表現: /pattern/、ワイルドカード: *.mp3）" />
-          <button id="clear-search-btn" class="clear-search" title="クリア">
-            <i class="mdi mdi-close"></i>
-          </button>
-        </div>
-        <div class="tag-filter-box">
-          <i class="mdi mdi-tag"></i>
-          <select id="tag-filter-select">
-            <option value="">すべて</option>
-            <option value="__favorites__">お気に入りのみ</option>
+        <label class="workspace-label" for="workspace-select">
+          <span class="workspace-kicker">案件 / ライブラリ</span>
+          <select id="workspace-select" title="保存したフォルダを切り替え">
+            <option value="">未選択</option>
           </select>
-        </div>
-        <div class="view-toggle">
-          <button id="grid-view-btn" class="view-btn active" title="グリッドビュー">
-            <i class="mdi mdi-view-grid"></i>
+        </label>
+        <div class="header-spacer"></div>
+        <button id="theme-toggle-btn" class="header-icon-btn" title="テーマを切り替え" aria-label="テーマを切り替え">
+          <i class="mdi mdi-weather-night"></i>
+        </button>
+      </header>
+
+      <div class="workspace-layout">
+        <aside class="library-sidebar">
+          <div class="sidebar-title-row">
+            <div class="sidebar-heading">ライブラリ</div>
+            <button id="select-folder-btn" class="sidebar-icon-action" title="フォルダを開く">
+              <i class="mdi mdi-folder-plus-outline"></i>
+            </button>
+          </div>
+          <div class="sidebar-section">
+            <div class="sidebar-heading compact">保存ビュー</div>
+            <button id="favorites-screen-btn" class="sidebar-action">
+              <i class="mdi mdi-star-outline"></i><span>お気に入り</span><span id="sidebar-favorites-count" class="sidebar-count">0</span>
+            </button>
+            <button id="drawer-toggle-btn" class="sidebar-action">
+              <i class="mdi mdi-history"></i><span>最近開いた場所</span><span id="sidebar-history-count" class="sidebar-count">0</span>
+            </button>
+          </div>
+          <div class="sidebar-section sidebar-folder-section">
+            <div class="sidebar-heading compact">フォルダ</div>
+          <div id="sidebar-current-folder" class="sidebar-current-folder">
+            <i class="mdi mdi-folder-outline"></i>
+            <span>未選択</span>
+          </div>
+            <div id="sidebar-folder-list" class="sidebar-tree-list"></div>
+          </div>
+          <div class="sidebar-section sidebar-tags-section">
+            <div class="sidebar-heading compact">タグ</div>
+            <div id="sidebar-tag-list" class="sidebar-tag-list">
+              <span class="sidebar-empty">タグはありません</span>
+            </div>
+          </div>
+          <button id="bookmark-current-btn" class="sidebar-action compact" disabled>
+            <i class="mdi mdi-star-plus-outline"></i><span>現在地を保存</span>
           </button>
-          <button id="list-view-btn" class="view-btn" title="リストビュー">
-            <i class="mdi mdi-view-list"></i>
-          </button>
-        </div>
+          <div class="sidebar-footer">
+            <span>Sound Pad</span><span>v2.0.0</span>
+          </div>
+        </aside>
+
+        <main class="container">
+          <div class="path-search-row">
+            <div class="address-bar">
+              <div id="breadcrumb-container" class="breadcrumb-container">
+                <span class="breadcrumb-placeholder">フォルダを選択してください</span>
+              </div>
+              <input type="text" id="address-input" class="address-input" placeholder="パスを入力..." />
+            </div>
+            <div class="search-box path-search-box">
+              <i class="mdi mdi-magnify"></i>
+              <input type="text" id="search-input" placeholder="ファイル名で検索" />
+              <button id="clear-search-btn" class="clear-search" title="クリア"><i class="mdi mdi-close"></i></button>
+            </div>
+          </div>
+
+          <div class="controls">
+            <div class="tag-filter-box">
+              <i class="mdi mdi-tag-outline"></i>
+              <select id="tag-filter-select">
+                <option value="">すべてのタグ</option>
+                <option value="__favorites__">お気に入りのみ</option>
+              </select>
+            </div>
+            <div class="view-toggle" aria-label="表示形式">
+              <button id="list-view-btn" class="view-btn active" title="リストビュー"><i class="mdi mdi-view-list"></i></button>
+              <button id="grid-view-btn" class="view-btn" title="カードビュー"><i class="mdi mdi-view-grid-outline"></i></button>
+            </div>
+          </div>
+
+          <div class="list-column-header" aria-hidden="true">
+            <span class="column-select"></span>
+            <span class="column-favorite"></span>
+            <span class="column-name">ファイル名</span>
+            <span class="column-tags">タグ</span>
+            <span class="column-duration">時間</span>
+            <span class="column-actions">操作</span>
+          </div>
+          <div id="audio-grid" class="audio-grid list-view">
+            <p class="placeholder">フォルダを選択して音声ファイルを読み込んでください</p>
+          </div>
+
+          <div class="bottom-controls">
+            <div class="selected-info"><span id="selected-count">選択: 0個</span></div>
+            <div class="action-buttons">
+              <button id="copy-selected-btn" class="action-btn" disabled title="選択項目をコピー">
+                <i class="mdi mdi-folder-move-outline"></i><span>選択ファイルをコピー</span>
+              </button>
+            </div>
+          </div>
+        </main>
+
+        <aside class="inspector-panel">
+          <div class="inspector-header">
+            <button id="playlist-tab-btn" class="inspector-tab active">プレイリスト</button>
+            <button id="details-tab-btn" class="inspector-tab">選択中の音声</button>
+          </div>
+          <div id="playlist-panel" class="playlist-panel">
+            <div class="playlist-toolbar">
+              <select id="playlist-select" aria-label="プレイリスト"></select>
+              <button id="playlist-new-btn" class="playlist-icon-btn" title="新しいプレイリスト"><i class="mdi mdi-plus"></i></button>
+              <button id="playlist-rename-btn" class="playlist-icon-btn" title="セットリスト名を変更"><i class="mdi mdi-pencil-outline"></i></button>
+              <button id="playlist-delete-btn" class="playlist-icon-btn danger" title="プレイリストを削除"><i class="mdi mdi-delete-outline"></i></button>
+            </div>
+            <div class="playlist-summary">
+              <span id="playlist-count">0曲</span><span id="playlist-duration">合計 0:00</span>
+            </div>
+            <button id="playlist-add-focused-btn" class="inspector-btn primary" disabled>
+              <i class="mdi mdi-playlist-plus"></i><span>選択中の曲を追加</span>
+            </button>
+            <div id="playlist-items" class="playlist-items"></div>
+          </div>
+          <div id="details-panel" hidden>
+            <div id="inspector-empty" class="inspector-empty">
+              <i class="mdi mdi-music-note-outline"></i>
+              <p>一覧から音声を選択すると、詳細を表示します。</p>
+            </div>
+            <div id="inspector-content" class="inspector-content" hidden>
+              <div class="inspector-file-icon"><i class="mdi mdi-music-note"></i></div>
+              <strong id="inspector-filename"></strong>
+              <span id="inspector-path" class="inspector-path"></span>
+              <div class="inspector-metadata">
+                <div><span>フォルダ</span><strong id="inspector-folder">—</strong></div>
+                <div><span>再生時間</span><strong id="inspector-duration">—</strong></div>
+              </div>
+              <div class="inspector-section">
+                <span class="inspector-label">タグ</span>
+                <div id="inspector-tags" class="inspector-tags"></div>
+              </div>
+              <button id="inspector-edit-tags-btn" class="inspector-btn" disabled>
+                <i class="mdi mdi-tag-edit-outline"></i><span>タグを編集</span>
+              </button>
+              <button id="inspector-copy-name-btn" class="inspector-btn primary" disabled>
+                <i class="mdi mdi-content-copy"></i><span>ファイル名をコピー</span>
+              </button>
+            </div>
+          </div>
+        </aside>
       </div>
 
-      <div id="audio-grid" class="audio-grid">
-        <p class="placeholder">フォルダを選択して音声ファイルを読み込んでください</p>
-      </div>
-
-      <div class="bottom-controls">
-        <div class="selected-info">
-          <span id="selected-count">選択: 0個</span>
-        </div>
-        <div class="action-buttons">
-          <button id="copy-selected-btn" class="action-btn" disabled title="選択項目をコピー">
-            <i class="mdi mdi-content-copy"></i>
-            <span>コピー</span>
-          </button>
-        </div>
-      </div>
-    </main>
-
-    <!-- シークバー付きプレイヤーパネル -->
-    <div id="player-panel" class="player-panel">
-      <div class="player-content">
+      <div id="player-panel" class="player-panel">
         <div class="player-info">
-          <span id="player-filename" class="player-filename">再生中のファイルはありません</span>
-          <div class="player-time">
-            <span id="player-current-time">0:00</span>
-            <span>/</span>
-            <span id="player-duration">0:00</span>
+          <span class="player-status-dot"></span>
+          <div class="player-title-group">
+            <span class="player-label">NOW PLAYING</span>
+            <span id="player-filename" class="player-filename">再生中のファイルはありません</span>
           </div>
         </div>
-        <div class="player-seekbar-container">
-          <input type="range" id="player-seekbar" class="player-seekbar" min="0" max="100" value="0" step="0.1" />
+        <div class="player-transport">
+          <div class="player-controls">
+            <button id="player-play-pause-btn" class="player-btn primary" disabled title="再生 / 一時停止"><i class="mdi mdi-play"></i></button>
+            <button id="player-stop-btn" class="player-btn" disabled title="停止"><i class="mdi mdi-stop"></i></button>
+          </div>
+          <span id="player-current-time" class="player-time">0:00</span>
+          <div class="player-seekbar-container">
+            <input type="range" id="player-seekbar" class="player-seekbar" min="0" max="100" value="0" step="0.1" />
+          </div>
+          <span id="player-duration" class="player-time">0:00</span>
         </div>
-        <div class="player-controls">
-          <button id="player-play-pause-btn" class="player-btn" disabled>
-            <i class="mdi mdi-play"></i>
-          </button>
-          <button id="player-stop-btn" class="player-btn" disabled>
-            <i class="mdi mdi-stop"></i>
-          </button>
+        <div class="master-volume">
+          <button id="player-mute-btn" class="volume-icon-btn" title="ミュート"><i class="mdi mdi-volume-high"></i></button>
+          <div class="volume-control">
+            <div class="volume-label"><span>MASTER</span><span id="player-volume-value">35%</span></div>
+            <input type="range" id="player-volume" min="0" max="100" value="35" step="1" />
+          </div>
         </div>
       </div>
     </div>
@@ -139,7 +232,7 @@
               <i class="mdi mdi-help-circle"></i>
               <div class="app-info-text">
                 <strong>Sound Pad</strong>
-                <span>v0.2.0</span>
+                <span>v2.0.0</span>
               </div>
             </div>
           </div>
@@ -291,6 +384,23 @@
     </div>
     <!-- コンテキストメニュー -->
     <div id="context-menu" class="context-menu">
+      <button id="context-play" class="context-menu-item">
+        <i class="mdi mdi-play"></i>
+        再生 / 停止
+      </button>
+      <button id="context-copy-name" class="context-menu-item">
+        <i class="mdi mdi-content-copy"></i>
+        ファイル名をコピー
+      </button>
+      <button id="context-toggle-favorite" class="context-menu-item">
+        <i class="mdi mdi-star-outline"></i>
+        お気に入りに追加
+      </button>
+      <button id="context-edit-tags" class="context-menu-item">
+        <i class="mdi mdi-tag-edit-outline"></i>
+        タグを編集
+      </button>
+      <div class="context-menu-separator"></div>
       <button id="context-open-explorer" class="context-menu-item">
         <i class="mdi mdi-folder-open"></i>
         エクスプローラで開く
@@ -301,11 +411,16 @@
     <div id="bookmark-context-menu" class="context-menu">
       <button id="bookmark-context-rename" class="context-menu-item">
         <i class="mdi mdi-pencil"></i>
-        名前を変更
+        別称を変更
       </button>
       <button id="bookmark-context-open-explorer" class="context-menu-item">
         <i class="mdi mdi-folder-open"></i>
         エクスプローラで開く
+      </button>
+      <div class="context-menu-separator"></div>
+      <button id="bookmark-context-remove" class="context-menu-item danger">
+        <i class="mdi mdi-star-minus-outline"></i>
+        保存フォルダから解除
       </button>
     </div>
 
@@ -327,7 +442,7 @@
         <div class="modal-header">
           <h2>
             <i class="mdi mdi-pencil"></i>
-            ブックマーク名を変更
+            保存フォルダの別称を変更
           </h2>
         </div>
         <div class="modal-body">
