@@ -1975,11 +1975,79 @@ body[data-theme="dark"] .audio-item-tags .tag-badge {
   color: hsl(var(--tag-hue) 48% 31%);
 }
 
+.bulk-tag-modal-content {
+  width: min(580px, calc(100vw - 40px));
+  max-width: 580px;
+}
+
+.bulk-tag-section {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-subtle);
+}
+
+.bulk-tag-section + .bulk-tag-section {
+  margin-top: 12px;
+}
+
+.bulk-tag-section .current-tags,
+.bulk-tag-section .tag-suggestions {
+  margin-bottom: 0;
+}
+
+.bulk-tag-section .tag-input-container,
+.bulk-tag-section .tag-suggestions {
+  margin-bottom: 12px;
+}
+
+.bulk-tag-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bulk-tag-section-help {
+  margin: -3px 0 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.bulk-tag-remove-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  font-family: inherit;
+}
+
+.bulk-tag-remove-option.selected {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 15%, var(--surface));
+  color: var(--danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 25%, transparent);
+}
+
+.bulk-tag-remove-option.selected:hover {
+  background: color-mix(in srgb, var(--danger) 22%, var(--surface));
+  color: var(--danger);
+}
+
 body[data-theme="dark"] .tag-suggestion,
 body[data-theme="dark"] .tag-chip {
   border-color: hsl(var(--tag-hue) 34% 35%);
   background: hsl(var(--tag-hue) 38% 23%);
   color: hsl(var(--tag-hue) 70% 78%);
+}
+
+body[data-theme="dark"] .bulk-tag-remove-option.selected {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 18%, var(--surface));
+  color: var(--danger);
 }
 
 @media (max-width: 1050px) {

@@ -285,9 +285,9 @@
               <i class="mdi mdi-magnify"></i>
               <input type="text" id="favorites-search-input" placeholder="ファイル名で検索..." />
             </div>
-            <button id="favorites-bulk-tag-btn" class="favorites-bulk-btn" disabled title="選択項目にタグを一括付与">
-              <i class="mdi mdi-tag-plus"></i>
-              <span>タグを一括付与</span>
+            <button id="favorites-bulk-tag-btn" class="favorites-bulk-btn" disabled title="選択項目のタグを一括編集">
+              <i class="mdi mdi-tag-multiple"></i>
+              <span>タグを一括編集</span>
             </button>
           </div>
           <div class="favorites-selection-bar">
@@ -345,8 +345,8 @@
       <div class="modal-content bulk-tag-modal-content">
         <div class="modal-header">
           <h2>
-            <i class="mdi mdi-tag-plus"></i>
-            タグを一括付与
+            <i class="mdi mdi-tag-multiple"></i>
+            タグを一括編集
           </h2>
           <button id="bulk-tag-modal-close-btn" class="modal-close-btn">
             <i class="mdi mdi-close"></i>
@@ -354,23 +354,31 @@
         </div>
         <div class="modal-body">
           <p id="bulk-tag-target-count" class="bulk-tag-info"></p>
-          <div class="tag-input-container">
-            <input type="text" id="bulk-tag-input" placeholder="新しいタグを追加..." />
-            <button id="bulk-tag-add-btn" class="tag-add-btn">
-              <i class="mdi mdi-plus"></i>
-            </button>
+          <div class="bulk-tag-section">
+            <span class="bulk-tag-section-title"><i class="mdi mdi-tag-plus-outline"></i> 一括付与</span>
+            <div class="tag-input-container">
+              <input type="text" id="bulk-tag-input" placeholder="新しいタグを追加..." />
+              <button id="bulk-tag-add-btn" class="tag-add-btn">
+                <i class="mdi mdi-plus"></i>
+              </button>
+            </div>
+            <div class="tag-suggestions">
+              <span class="tag-suggestions-label">追加候補:</span>
+              <div id="bulk-tag-suggestions-list" class="tag-suggestions-list"></div>
+            </div>
+            <div class="current-tags">
+              <span class="current-tags-label">付与するタグ:</span>
+              <div id="bulk-tag-list" class="current-tags-list"></div>
+            </div>
           </div>
-          <div class="tag-suggestions">
-            <span class="tag-suggestions-label">既存のタグ:</span>
-            <div id="bulk-tag-suggestions-list" class="tag-suggestions-list"></div>
-          </div>
-          <div class="current-tags">
-            <span class="current-tags-label">付与するタグ:</span>
-            <div id="bulk-tag-list" class="current-tags-list"></div>
+          <div class="bulk-tag-section bulk-tag-remove-section">
+            <span class="bulk-tag-section-title"><i class="mdi mdi-tag-minus-outline"></i> 一括削除</span>
+            <p class="bulk-tag-section-help">選択中のすべてのファイルに共通するタグだけを表示します。</p>
+            <div id="bulk-tag-remove-list" class="tag-suggestions-list bulk-tag-remove-list"></div>
           </div>
         </div>
         <div class="modal-footer">
-          <button id="bulk-tag-save-btn" class="modal-btn primary">一括付与</button>
+          <button id="bulk-tag-save-btn" class="modal-btn primary">変更を適用</button>
           <button id="bulk-tag-cancel-btn" class="modal-btn secondary">キャンセル</button>
         </div>
       </div>

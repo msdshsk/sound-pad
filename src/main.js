@@ -24,6 +24,8 @@ let editingTagsFilePath = null;
 let editingTags = [];
 let selectedFavorites = new Set(); // お気に入り画面での選択状態
 let bulkTags = []; // 一括付与するタグ
+let bulkCommonTags = []; // 選択項目すべてに共通するタグ
+let bulkTagsToRemove = []; // 一括削除する共通タグ
 let focusedFilePath = null;
 let masterVolume = Number.parseInt(localStorage.getItem("sound-pad-volume") || "35", 10);
 let lastAudibleVolume = masterVolume > 0 ? masterVolume : 35;
@@ -1985,12 +1987,15 @@ function updateFavoritesSelectionUI() {
 // 一括タグ編集モーダルを開く
 function openBulkTagModal() {
   bulkTags = [];
+  bulkCommonTags = getCommonTagsForSelectedFavorites();
+  bulkTagsToRemove = [];
   document.getElementById("bulk-tag-target-count").textContent =
-    `${selectedFavorites.size}個のファイルにタグを付与します`;
+    `${selectedFavorites.size}個のファイルのタグを編集します`;
   document.getElementById("bulk-tag-input").value = "";
 
   renderBulkTags();
   renderBulkTagSuggestions();
+  renderBulkTagRemovals();
 
   const modal = document.getElementById("bulk-tag-modal");
   modal.classList.add("show");
@@ -2001,6 +2006,28 @@ function closeBulkTagModal() {
   const modal = document.getElementById("bulk-tag-modal");
   modal.classList.remove("show");
   bulkTags = [];
+  bulkCommonTags = [];
+  bulkTagsToRemove = [];
+}
+
+function getCommonTagsForSelectedFavorites() {
+  const selectedItems = Array.from(selectedFavorites)
+    .map(filePath => favoriteFiles.get(filePath))
+    .filter(Boolean);
+  if (selectedItems.length === 0) return [];
+
+  const firstTags = [...new Set(selectedItems[0].tags || [])];
+  return firstTags.filter(tag =>
+    selectedItems.slice(1).every(item => (item.tags || []).includes(tag))
+  );
+}
+
+function applyBulkTagChanges(currentTags, tagsToAdd, tagsToRemove) {
+  const removeSet = new Set(tagsToRemove);
+  return [...new Set([
+    ...(currentTags || []).filter(tag => !removeSet.has(tag)),
+    ...tagsToAdd
+  ])];
 }
 
 // 一括付与するタグを表示
@@ -2032,7 +2059,9 @@ function renderBulkTagSuggestions() {
   const container = document.getElementById("bulk-tag-suggestions-list");
   container.innerHTML = "";
 
-  const availableTags = allTags.filter(tag => !bulkTags.includes(tag));
+  const availableTags = allTags.filter(tag =>
+    !bulkTags.includes(tag) && !bulkCommonTags.includes(tag)
+  );
 
   if (availableTags.length === 0) {
     container.innerHTML = '<span class="no-tags">候補なし</span>';
@@ -2046,9 +2075,11 @@ function renderBulkTagSuggestions() {
     tagSpan.textContent = tag;
     tagSpan.addEventListener("click", () => {
       if (!bulkTags.includes(tag)) {
+        bulkTagsToRemove = bulkTagsToRemove.filter(item => item !== tag);
         bulkTags.push(tag);
         renderBulkTags();
         renderBulkTagSuggestions();
+        renderBulkTagRemovals();
       }
     });
     container.appendChild(tagSpan);
@@ -2059,18 +2090,55 @@ function renderBulkTagSuggestions() {
 function addBulkTagFromInput() {
   const input = document.getElementById("bulk-tag-input");
   const tag = input.value.trim();
-  if (tag && !bulkTags.includes(tag)) {
+  if (tag && bulkCommonTags.includes(tag)) {
+    bulkTagsToRemove = bulkTagsToRemove.filter(item => item !== tag);
+    input.value = "";
+    renderBulkTagRemovals();
+  } else if (tag && !bulkTags.includes(tag)) {
+    bulkTagsToRemove = bulkTagsToRemove.filter(item => item !== tag);
     bulkTags.push(tag);
     input.value = "";
     renderBulkTags();
     renderBulkTagSuggestions();
+    renderBulkTagRemovals();
   }
+}
+
+function renderBulkTagRemovals() {
+  const container = document.getElementById("bulk-tag-remove-list");
+  container.innerHTML = "";
+  if (bulkCommonTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">共通タグはありません</span>';
+    return;
+  }
+
+  bulkCommonTags.forEach(tag => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tag-suggestion bulk-tag-remove-option";
+    button.classList.toggle("selected", bulkTagsToRemove.includes(tag));
+    button.style.setProperty("--tag-hue", getTagHue(tag));
+    button.innerHTML = `<i class="mdi mdi-tag-minus-outline"></i><span></span>`;
+    button.querySelector("span").textContent = tag;
+    button.addEventListener("click", () => {
+      if (bulkTagsToRemove.includes(tag)) {
+        bulkTagsToRemove = bulkTagsToRemove.filter(item => item !== tag);
+      } else {
+        bulkTags = bulkTags.filter(item => item !== tag);
+        bulkTagsToRemove.push(tag);
+      }
+      renderBulkTags();
+      renderBulkTagSuggestions();
+      renderBulkTagRemovals();
+    });
+    container.appendChild(button);
+  });
 }
 
 // 一括タグ付与を実行
 async function saveBulkTags() {
-  if (bulkTags.length === 0) {
-    alert("付与するタグを選択してください");
+  if (bulkTags.length === 0 && bulkTagsToRemove.length === 0) {
+    alert("付与または削除するタグを選択してください");
     return;
   }
 
@@ -2078,8 +2146,7 @@ async function saveBulkTags() {
   for (const filePath of selectedPaths) {
     const item = favoriteFiles.get(filePath);
     if (item) {
-      // 既存のタグに新しいタグをマージ（重複を除去）
-      const newTags = [...new Set([...item.tags, ...bulkTags])];
+      const newTags = applyBulkTagChanges(item.tags, bulkTags, bulkTagsToRemove);
       await updateFavoriteTags(filePath, newTags);
     }
   }
