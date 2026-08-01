@@ -1819,17 +1819,11 @@ function renderLibrarySidebar() {
   });
 }
 
-// お気に入りリストを表示
-function renderFavoritesList() {
-  const container = document.getElementById("favorites-list-container");
-  const searchQuery = document.getElementById("favorites-search-input").value.toLowerCase();
-  const tagFilter = document.getElementById("favorites-tag-filter").value;
-  const folderFilter = document.getElementById("favorites-folder-filter").value;
-
-  const filteredFavorites = Array.from(favoriteFiles.values()).filter(item => {
+function filterFavoriteItems(items, { searchQuery, tagFilter, folderFilter }) {
+  return items.filter(item => {
     const fileName = item.file_path.split(/[\\/]/).pop().toLowerCase();
     const matchesSearch = !searchQuery || fileName.includes(searchQuery);
-    const matchesTag = !tagFilter || item.tags.includes(tagFilter);
+    const matchesTag = !tagFilter || (item.tags || []).includes(tagFilter);
 
     // フォルダフィルタ：ブックマークフォルダまたはそのサブフォルダに含まれるか
     let matchesFolder = true;
@@ -1842,6 +1836,27 @@ function renderFavoritesList() {
 
     return matchesSearch && matchesTag && matchesFolder;
   });
+}
+
+function getFilteredFavorites() {
+  return filterFavoriteItems(Array.from(favoriteFiles.values()), {
+    searchQuery: document.getElementById("favorites-search-input").value.toLowerCase(),
+    tagFilter: document.getElementById("favorites-tag-filter").value,
+    folderFilter: document.getElementById("favorites-folder-filter").value
+  });
+}
+
+function updateVisibleFavoritesSelection(checked) {
+  getFilteredFavorites().forEach(item => {
+    if (checked) selectedFavorites.add(item.file_path);
+    else selectedFavorites.delete(item.file_path);
+  });
+}
+
+// お気に入りリストを表示
+function renderFavoritesList() {
+  const container = document.getElementById("favorites-list-container");
+  const filteredFavorites = getFilteredFavorites();
 
   if (filteredFavorites.length === 0) {
     container.innerHTML = '<p class="empty-message">お気に入りはありません</p>';
@@ -1948,13 +1963,17 @@ function updateFavoritesSelectionUI() {
   document.getElementById("favorites-selected-count").textContent = `選択: ${count}個`;
   document.getElementById("favorites-bulk-tag-btn").disabled = count === 0;
 
-  // すべて選択チェックボックスの状態を更新
+  // 「すべて選択」は、現在のフィルターで表示されている項目だけを基準にする
   const allCheckbox = document.getElementById("favorites-select-all-checkbox");
-  const totalItems = favoriteFiles.size;
-  if (count === 0) {
+  const visibleFavorites = getFilteredFavorites();
+  const selectedVisibleCount = visibleFavorites
+    .filter(item => selectedFavorites.has(item.file_path))
+    .length;
+  allCheckbox.disabled = visibleFavorites.length === 0;
+  if (selectedVisibleCount === 0) {
     allCheckbox.checked = false;
     allCheckbox.indeterminate = false;
-  } else if (count === totalItems) {
+  } else if (selectedVisibleCount === visibleFavorites.length) {
     allCheckbox.checked = true;
     allCheckbox.indeterminate = false;
   } else {
@@ -2678,15 +2697,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // お気に入り選択・一括タグ付与
   document.getElementById("favorites-select-all-checkbox").addEventListener("change", (e) => {
-    if (e.target.checked) {
-      // すべて選択
-      favoriteFiles.forEach((item, path) => {
-        selectedFavorites.add(path);
-      });
-    } else {
-      // すべて解除
-      selectedFavorites.clear();
-    }
+    updateVisibleFavoritesSelection(e.target.checked);
     renderFavoritesList();
   });
 
