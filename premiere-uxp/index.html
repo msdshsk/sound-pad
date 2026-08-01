@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sound Pad</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main id="app">
+      <header class="app-header">
+        <div class="title-block">
+          <h1>Sound Pad</h1>
+          <p id="sequence-name" class="subtle truncate">シーケンス未取得</p>
+        </div>
+        <button id="open-json-button" class="primary-button" type="button">
+          JSONを開く
+        </button>
+      </header>
+
+      <section class="source-card" aria-label="読み込み中のリスト">
+        <div class="source-main">
+          <span id="source-kind" class="eyebrow">未読み込み</span>
+          <strong id="source-name" class="truncate">JSONを選択してください</strong>
+          <span id="source-file" class="subtle truncate"></span>
+        </div>
+        <span id="item-summary" class="summary-badge">0件</span>
+      </section>
+
+      <section class="controls" aria-label="配置設定">
+        <label class="field">
+          <span>配置先</span>
+          <select id="track-select" disabled>
+            <option value="">オーディオトラックなし</option>
+          </select>
+        </label>
+        <button id="refresh-button" class="secondary-button" type="button">
+          再照合
+        </button>
+      </section>
+
+      <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+      <section id="list-container" class="list-container" aria-label="セットリスト">
+        <div id="empty-state" class="empty-state">
+          <strong>セットリストがありません</strong>
+          <span>Sound Padから書き出したJSONを読み込んでください。</span>
+        </div>
+        <div id="item-list" class="item-list"></div>
+      </section>
+    </main>
+
+    <script src="main.js"></script>
+  </body>
+</html>

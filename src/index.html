@@ -64,7 +64,7 @@
             <i class="mdi mdi-star-plus-outline"></i><span>現在地を保存</span>
           </button>
           <div class="sidebar-footer">
-            <span>Sound Pad</span><span>v2.0.0</span>
+            <span>Sound Pad</span><span>v2.1.0</span>
           </div>
         </aside>
 
@@ -84,21 +84,35 @@
           </div>
 
           <div class="controls">
-            <div class="tag-filter-box">
-              <i class="mdi mdi-tag-outline"></i>
-              <select id="tag-filter-select">
-                <option value="">すべてのタグ</option>
-                <option value="__favorites__">お気に入りのみ</option>
-              </select>
+            <div id="main-tag-filter" class="multi-tag-filter">
+              <button id="tag-filter-toggle" class="multi-tag-toggle" type="button" aria-expanded="false">
+                <i class="mdi mdi-tag-multiple-outline"></i>
+                <span id="tag-filter-label">すべてのタグ</span>
+                <i class="mdi mdi-chevron-down"></i>
+              </button>
+              <div id="tag-filter-panel" class="multi-tag-panel" hidden>
+                <label class="multi-tag-option favorite-option">
+                  <input id="tag-filter-favorites" type="checkbox" />
+                  <span>お気に入りのみ</span>
+                </label>
+                <div class="multi-tag-separator"></div>
+                <div id="tag-filter-options" class="multi-tag-options"></div>
+                <button id="tag-filter-clear" class="multi-tag-clear" type="button">条件をクリア</button>
+              </div>
             </div>
+            <button id="export-favorites-btn" class="toolbar-action-btn" title="絞り込み済みお気に入りをJSON書き出し">
+              <i class="mdi mdi-export-variant"></i><span>JSON</span>
+            </button>
             <div class="view-toggle" aria-label="表示形式">
               <button id="list-view-btn" class="view-btn active" title="リストビュー"><i class="mdi mdi-view-list"></i></button>
               <button id="grid-view-btn" class="view-btn" title="カードビュー"><i class="mdi mdi-view-grid-outline"></i></button>
             </div>
           </div>
 
-          <div class="list-column-header" aria-hidden="true">
-            <span class="column-select"></span>
+          <div class="list-column-header">
+            <span class="column-select">
+              <input id="main-select-all-checkbox" class="main-select-all" type="checkbox" aria-label="表示中の音声をすべて選択" title="表示中の音声をすべて選択 / 解除" disabled />
+            </span>
             <span class="column-favorite"></span>
             <span class="column-name">ファイル名</span>
             <span class="column-tags">タグ</span>
@@ -129,6 +143,7 @@
               <select id="playlist-select" aria-label="プレイリスト"></select>
               <button id="playlist-new-btn" class="playlist-icon-btn" title="新しいプレイリスト"><i class="mdi mdi-plus"></i></button>
               <button id="playlist-rename-btn" class="playlist-icon-btn" title="セットリスト名を変更"><i class="mdi mdi-pencil-outline"></i></button>
+              <button id="playlist-export-btn" class="playlist-icon-btn" title="セットリストをJSON書き出し"><i class="mdi mdi-export-variant"></i></button>
               <button id="playlist-delete-btn" class="playlist-icon-btn danger" title="プレイリストを削除"><i class="mdi mdi-delete-outline"></i></button>
             </div>
             <div class="playlist-summary">
@@ -232,7 +247,7 @@
               <i class="mdi mdi-help-circle"></i>
               <div class="app-info-text">
                 <strong>Sound Pad</strong>
-                <span>v2.0.0</span>
+                <span>v2.1.0</span>
               </div>
             </div>
           </div>
@@ -458,6 +473,42 @@
         <div class="modal-footer">
           <button id="bookmark-rename-save-btn" class="modal-btn primary">保存</button>
           <button id="bookmark-rename-cancel-btn" class="modal-btn secondary">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 欠損したお気に入りパスの修復 -->
+    <div id="repair-modal" class="modal repair-modal">
+      <div class="modal-content repair-modal-content">
+        <div class="modal-header repair-modal-header">
+          <div>
+            <span class="inspector-kicker">LIBRARY REPAIR</span>
+            <h2><i class="mdi mdi-link-variant-off"></i> 音声ファイルの参照を修復</h2>
+          </div>
+          <button id="repair-close-btn" class="modal-close-btn" title="閉じる"><i class="mdi mdi-close"></i></button>
+        </div>
+        <div class="modal-body repair-modal-body">
+          <div id="repair-summary" class="repair-summary"></div>
+          <div class="repair-workspace-row">
+            <div>
+              <span>検索ワークスペース</span>
+              <strong id="repair-workspace">未選択</strong>
+            </div>
+            <button id="repair-search-btn" class="modal-btn secondary">
+              <i class="mdi mdi-folder-search-outline"></i> フォルダを選んで再帰検索
+            </button>
+          </div>
+          <div id="repair-results" class="repair-results"></div>
+        </div>
+        <div class="modal-footer repair-modal-footer">
+          <button id="repair-delete-btn" class="modal-btn danger" disabled>
+            <i class="mdi mdi-delete-outline"></i> 選択した未解決参照を削除
+          </button>
+          <div class="modal-footer-spacer"></div>
+          <button id="repair-apply-btn" class="modal-btn primary" disabled>
+            <i class="mdi mdi-find-replace"></i> 検出結果を一括反映
+          </button>
+          <button id="repair-cancel-btn" class="modal-btn secondary">後で行う</button>
         </div>
       </div>
     </div>

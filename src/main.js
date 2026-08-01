@@ -1,10 +1,11 @@
 const { invoke } = window.__TAURI__.core;
-const { open } = window.__TAURI__.dialog;
+const { open, save } = window.__TAURI__.dialog;
 const { listen } = window.__TAURI__.event;
 
 let audioFiles = [];
 let subDirectories = [];
 let selectedFiles = new Set();
+let visibleAudioFilePaths = [];
 let currentPlayingPath = null;
 let currentPlayingDuration = null;
 let lastPlayedPath = null; // 最後に再生したファイルのパス（停止後も保持）
@@ -12,7 +13,8 @@ let lastPlayedDuration = null; // 最後に再生したファイルの長さ
 let currentFolder = null;
 let lastCopiedDestination = null;
 let searchQuery = "";
-let tagFilter = ""; // タグフィルター（空文字=すべて、__favorites__=お気に入りのみ、それ以外=タグ名）
+let selectedTagFilters = new Set();
+let favoritesOnlyFilter = false;
 let favoriteFiles = new Map(); // Map<filePath, FavoriteItem>
 let isListView = localStorage.getItem("sound-pad-view") !== "grid";
 let playbackUpdateInterval = null;
@@ -27,6 +29,7 @@ let masterVolume = Number.parseInt(localStorage.getItem("sound-pad-volume") || "
 let lastAudibleVolume = masterVolume > 0 ? masterVolume : 35;
 let playlistStore = null;
 let breadcrumbResizeObserver = null;
+let repairState = null;
 
 // LocalStorage キー
 const HISTORY_KEY = "sound-pad-history";
@@ -358,7 +361,7 @@ function renderBookmarks() {
     item.appendChild(pathSpan);
     item.appendChild(removeBtn);
     item.addEventListener("click", () => {
-      openFolder(bookmark.path);
+      openBookmarkedFolder(bookmark);
       closeDrawer();
     });
 
@@ -394,6 +397,211 @@ async function openFolder(path) {
 
   addToHistory(path);
   await loadAudioFiles(path);
+}
+
+async function openBookmarkedFolder(bookmark) {
+  try {
+    const audit = await invoke("audit_library_root", { rootPath: bookmark.path });
+    if (audit.root_exists) await openFolder(bookmark.path);
+    if (!audit.root_exists || audit.missing_items.length > 0) {
+      openRepairModal(audit, bookmark);
+    }
+  } catch (error) {
+    console.error("Error auditing saved folder:", error);
+    await openFolder(bookmark.path);
+  }
+}
+
+function openRepairModal(audit, bookmark) {
+  repairState = {
+    audit,
+    bookmark,
+    search: null,
+    selectedUnresolved: new Set(audit.missing_items.map(item => item.file_path))
+  };
+  document.getElementById("repair-modal").classList.add("show");
+  renderRepairModal();
+}
+
+function closeRepairModal() {
+  document.getElementById("repair-modal").classList.remove("show");
+  repairState = null;
+}
+
+function renderRepairModal() {
+  if (!repairState) return;
+  const { audit, search, selectedUnresolved } = repairState;
+  const replacements = search?.replacements || [];
+  const unresolved = search?.unresolved || audit.missing_items.map(item => ({
+    old_path: item.file_path,
+    candidates: []
+  }));
+  const summary = document.getElementById("repair-summary");
+  summary.className = `repair-summary ${audit.root_exists ? "warning" : "error"}`;
+  summary.innerHTML = audit.root_exists
+    ? `<i class="mdi mdi-alert-outline"></i><div><strong>${unresolved.length + replacements.length}件の参照切れを検出</strong><span>保存フォルダは存在しますが、お気に入りの一部が見つかりません。</span></div>`
+    : `<i class="mdi mdi-folder-alert-outline"></i><div><strong>保存フォルダが見つかりません</strong><span>${audit.root_path}</span></div>`;
+
+  const workspace = document.getElementById("repair-workspace");
+  workspace.textContent = search?.workspace_path || "未選択";
+  workspace.title = search?.workspace_path || "";
+
+  const results = document.getElementById("repair-results");
+  results.innerHTML = "";
+  replacements.forEach(replacement => {
+    const row = document.createElement("div");
+    row.className = "repair-result resolved";
+    row.innerHTML = '<i class="mdi mdi-check-circle-outline"></i><div><strong></strong><span class="repair-arrow">→</span><span class="repair-new-path"></span></div>';
+    row.querySelector("strong").textContent = replacement.old_path;
+    row.querySelector(".repair-new-path").textContent = replacement.new_path;
+    results.appendChild(row);
+  });
+  unresolved.forEach(item => {
+    const label = document.createElement("label");
+    label.className = "repair-result unresolved";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedUnresolved.has(item.old_path);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedUnresolved.add(item.old_path);
+      else selectedUnresolved.delete(item.old_path);
+      document.getElementById("repair-delete-btn").disabled = selectedUnresolved.size === 0;
+    });
+    const info = document.createElement("div");
+    const name = item.old_path.split(/[\\/]/).pop();
+    const candidateText = item.candidates?.length
+      ? `同名候補が${item.candidates.length}件あるため自動判定できません`
+      : "検索先で見つかりません";
+    info.innerHTML = '<strong></strong><span></span><small></small>';
+    info.querySelector("strong").textContent = name;
+    info.querySelector("span").textContent = item.old_path;
+    info.querySelector("small").textContent = search ? candidateText : "検索ワークスペースを選択してください";
+    label.append(checkbox, info);
+    results.appendChild(label);
+  });
+  if (replacements.length === 0 && unresolved.length === 0) {
+    results.innerHTML = '<div class="repair-complete"><i class="mdi mdi-check-circle"></i>参照切れは解消されました</div>';
+  }
+  const canReplaceEmptyRoot = !audit.root_exists && audit.missing_items.length === 0 && search?.suggested_root;
+  document.getElementById("repair-apply-btn").disabled = replacements.length === 0 && !canReplaceEmptyRoot;
+  document.getElementById("repair-delete-btn").disabled = selectedUnresolved.size === 0;
+}
+
+async function searchRepairWorkspace() {
+  if (!repairState) return;
+  const workspace = await open({ directory: true, multiple: false });
+  if (!workspace) return;
+  const missingPaths = repairState.audit.missing_items.map(item => item.file_path);
+  if (missingPaths.length === 0) {
+    repairState.search = {
+      workspace_path: workspace,
+      replacements: [],
+      unresolved: [],
+      suggested_root: workspace
+    };
+    repairState.selectedUnresolved.clear();
+    renderRepairModal();
+    return;
+  }
+  try {
+    repairState.search = await invoke("search_missing_favorites", {
+      workspacePath: workspace,
+      missingPaths
+    });
+    repairState.selectedUnresolved = new Set(repairState.search.unresolved.map(item => item.old_path));
+    renderRepairModal();
+  } catch (error) {
+    alert("再帰検索に失敗しました: " + error);
+  }
+}
+
+async function refreshReferencesAfterRepair(result) {
+  favoriteFiles = new Map(result.favorites.map(item => [item.file_path, item]));
+  playlistStore = result.playlists;
+  allTags = await invoke("get_all_tags");
+  updateMainTagFilterOptions();
+  updateTagFilterOptions();
+  renderAudioFiles();
+  renderLibrarySidebar();
+  renderPlaylistPanel();
+}
+
+function replaceBookmarkRoot(oldPath, newPath) {
+  const bookmarks = getBookmarks();
+  const bookmark = bookmarks.find(item => item.path.toLowerCase() === oldPath.toLowerCase());
+  if (!bookmark) return;
+  const existing = bookmarks.find(item => item.path.toLowerCase() === newPath.toLowerCase());
+  if (existing && existing !== bookmark) {
+    if (!existing.alias && bookmark.alias) existing.alias = bookmark.alias;
+    saveBookmarks(bookmarks.filter(item => item !== bookmark));
+  } else {
+    bookmark.path = newPath;
+    saveBookmarks(bookmarks);
+  }
+  renderBookmarks();
+}
+
+async function applyRepairReplacements() {
+  if (!repairState?.search) return;
+  if (repairState.search.replacements.length === 0 && !repairState.audit.root_exists && repairState.audit.missing_items.length === 0) {
+    const newRoot = repairState.search.suggested_root;
+    if (!newRoot) return;
+    replaceBookmarkRoot(repairState.audit.root_path, newRoot);
+    repairState.audit.root_path = newRoot;
+    repairState.audit.root_exists = true;
+    await openFolder(newRoot);
+    renderRepairModal();
+    return;
+  }
+  if (repairState.search.replacements.length === 0) return;
+  try {
+    const oldRoot = repairState.audit.root_path;
+    const rootWasMissing = !repairState.audit.root_exists;
+    const result = await invoke("apply_path_replacements", {
+      replacements: repairState.search.replacements
+    });
+    await refreshReferencesAfterRepair(result);
+    const unresolvedPaths = new Set(repairState.search.unresolved.map(item => item.old_path));
+    repairState.audit.missing_items = repairState.audit.missing_items
+      .filter(item => unresolvedPaths.has(item.file_path));
+    if (rootWasMissing && repairState.search.suggested_root) {
+      const newRoot = repairState.search.suggested_root;
+      replaceBookmarkRoot(oldRoot, newRoot);
+      repairState.audit.root_path = newRoot;
+      repairState.audit.root_exists = true;
+      await openFolder(newRoot);
+    }
+    repairState.search = repairState.audit.missing_items.length > 0
+      ? { ...repairState.search, replacements: [], unresolved: repairState.search.unresolved }
+      : { ...repairState.search, replacements: [], unresolved: [] };
+    repairState.selectedUnresolved = new Set(repairState.search.unresolved.map(item => item.old_path));
+    renderRepairModal();
+  } catch (error) {
+    alert("パスの一括置換に失敗しました: " + error);
+  }
+}
+
+async function deleteSelectedMissingReferences() {
+  if (!repairState?.selectedUnresolved.size) return;
+  const filePaths = Array.from(repairState.selectedUnresolved);
+  if (!confirm(`${filePaths.length}件をお気に入りとセットリストから削除しますか？`)) return;
+  try {
+    const result = await invoke("remove_missing_references", { filePaths });
+    await refreshReferencesAfterRepair(result);
+    const removed = new Set(filePaths);
+    repairState.audit.missing_items = repairState.audit.missing_items
+      .filter(item => !removed.has(item.file_path));
+    if (repairState.search) {
+      repairState.search.replacements = repairState.search.replacements
+        .filter(item => !removed.has(item.old_path));
+      repairState.search.unresolved = repairState.search.unresolved
+        .filter(item => !removed.has(item.old_path));
+    }
+    repairState.selectedUnresolved.clear();
+    renderRepairModal();
+  } catch (error) {
+    alert("参照の削除に失敗しました: " + error);
+  }
 }
 
 // パンくずリストを描画
@@ -601,23 +809,24 @@ function renderAudioFiles() {
 
   // サブディレクトリをフィルタリング（タグフィルターがある場合はフォルダを非表示）
   let filteredDirs = [];
-  if (!tagFilter) {
+  if (!favoritesOnlyFilter && selectedTagFilters.size === 0) {
     filteredDirs = subDirectories.filter(dir => matcher(dir.name));
   }
 
   let filteredFiles = audioFiles.filter(file => matcher(file.name));
 
   // タグフィルタリング
-  if (tagFilter === "__favorites__") {
-    // お気に入りのみ
+  if (favoritesOnlyFilter || selectedTagFilters.size > 0) {
     filteredFiles = filteredFiles.filter(file => favoriteFiles.has(file.path));
-  } else if (tagFilter) {
-    // 特定のタグでフィルタ
+  }
+  if (selectedTagFilters.size > 0) {
     filteredFiles = filteredFiles.filter(file => {
       const favoriteItem = favoriteFiles.get(file.path);
-      return favoriteItem && favoriteItem.tags && favoriteItem.tags.includes(tagFilter);
+      return favoriteItem && Array.from(selectedTagFilters)
+        .every(tag => favoriteItem.tags?.includes(tag));
     });
   }
+  visibleAudioFilePaths = filteredFiles.map(file => file.path);
 
   if (filteredDirs.length === 0 && filteredFiles.length === 0) {
     if (audioFiles.length === 0 && subDirectories.length === 0) {
@@ -1035,6 +1244,28 @@ function updateSelectedCount() {
 
   const copyBtn = document.getElementById("copy-selected-btn");
   copyBtn.disabled = count === 0;
+  updateMainSelectAllCheckbox();
+}
+
+function updateMainSelectAllCheckbox() {
+  const checkbox = document.getElementById("main-select-all-checkbox");
+  if (!checkbox) return;
+  const selectedVisibleCount = visibleAudioFilePaths
+    .filter(path => selectedFiles.has(path)).length;
+  checkbox.disabled = visibleAudioFilePaths.length === 0;
+  checkbox.checked = visibleAudioFilePaths.length > 0 && selectedVisibleCount === visibleAudioFilePaths.length;
+  checkbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleAudioFilePaths.length;
+  checkbox.title = checkbox.checked
+    ? "表示中の音声をすべて解除"
+    : "表示中の音声をすべて選択";
+}
+
+function toggleSelectAllVisible(checked) {
+  visibleAudioFilePaths.forEach(path => {
+    if (checked) selectedFiles.add(path);
+    else selectedFiles.delete(path);
+  });
+  renderAudioFiles();
 }
 
 // 選択したファイルをコピー
@@ -1128,16 +1359,44 @@ function updateTagFilterOptions() {
 
 // メイン画面のタグフィルターのオプションを更新
 function updateMainTagFilterOptions() {
-  const select = document.getElementById("tag-filter-select");
-  const currentValue = select.value;
-  select.innerHTML = '<option value="">すべて</option><option value="__favorites__">お気に入りのみ</option>';
+  const options = document.getElementById("tag-filter-options");
+  if (!options) return;
+  selectedTagFilters = new Set(Array.from(selectedTagFilters).filter(tag => allTags.includes(tag)));
+  options.innerHTML = "";
   allTags.forEach(tag => {
-    const option = document.createElement("option");
-    option.value = tag;
-    option.textContent = tag;
-    select.appendChild(option);
+    const label = document.createElement("label");
+    label.className = "multi-tag-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = tag;
+    checkbox.checked = selectedTagFilters.has(tag);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedTagFilters.add(tag);
+      else selectedTagFilters.delete(tag);
+      updateMainTagFilterLabel();
+      renderAudioFiles();
+      renderLibrarySidebar();
+    });
+    const dot = document.createElement("span");
+    dot.className = "sidebar-tag-dot";
+    dot.style.setProperty("--tag-hue", getTagHue(tag));
+    const text = document.createElement("span");
+    text.textContent = tag;
+    label.append(checkbox, dot, text);
+    options.appendChild(label);
   });
-  select.value = currentValue;
+  const favoritesCheckbox = document.getElementById("tag-filter-favorites");
+  if (favoritesCheckbox) favoritesCheckbox.checked = favoritesOnlyFilter;
+  updateMainTagFilterLabel();
+}
+
+function updateMainTagFilterLabel() {
+  const label = document.getElementById("tag-filter-label");
+  if (!label) return;
+  const conditions = selectedTagFilters.size + (favoritesOnlyFilter ? 1 : 0);
+  if (conditions === 0) label.textContent = "すべてのタグ";
+  else if (selectedTagFilters.size === 1 && !favoritesOnlyFilter) label.textContent = Array.from(selectedTagFilters)[0];
+  else label.textContent = `${conditions}条件（すべて一致）`;
 }
 
 // フォルダフィルターのオプションを更新
@@ -1199,6 +1458,7 @@ function updateInspector(filePath = focusedFilePath) {
     empty.hidden = false;
     content.hidden = true;
     document.getElementById("playlist-add-focused-btn").disabled = true;
+    updateSelectedCount();
     return;
   }
 
@@ -1352,6 +1612,75 @@ function showInspectorTab(tab) {
   document.getElementById("details-tab-btn").classList.toggle("active", !playlistActive);
 }
 
+function safeExportName(name) {
+  return name.replace(/[<>:"/\\|?*]+/g, "_").trim() || "sound-pad-export";
+}
+
+async function writeJsonExport(defaultName, payload) {
+  const target = await save({
+    defaultPath: `${defaultName}.json`,
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (!target) return false;
+  await invoke("write_json_export", {
+    path: target,
+    contents: JSON.stringify(payload, null, 2)
+  });
+  return true;
+}
+
+async function exportFilteredFavorites() {
+  const tags = Array.from(selectedTagFilters).sort((left, right) => left.localeCompare(right, "ja"));
+  const items = Array.from(favoriteFiles.values())
+    .filter(item => tags.every(tag => item.tags?.includes(tag)))
+    .sort((left, right) => left.file_path.localeCompare(right.file_path, "ja"))
+    .map(item => ({
+      file_path: item.file_path,
+      file_name: item.file_path.split(/[\\/]/).pop(),
+      tags: item.tags || [],
+      added_at: item.added_at
+    }));
+  const suffix = tags.length ? tags.join("_") : "all";
+  try {
+    await writeJsonExport(safeExportName(`sound-pad-favorites-${suffix}`), {
+      format: "sound-pad-favorites",
+      schema_version: 1,
+      exported_at: new Date().toISOString(),
+      filters: { tags, match: "all" },
+      item_count: items.length,
+      items
+    });
+  } catch (error) {
+    alert("お気に入りJSONの書き出しに失敗しました: " + error);
+  }
+}
+
+async function exportActivePlaylist() {
+  const playlist = getActivePlaylist();
+  if (!playlist) return;
+  try {
+    await writeJsonExport(safeExportName(`sound-pad-setlist-${playlist.name}`), {
+      format: "sound-pad-setlist",
+      schema_version: 1,
+      exported_at: new Date().toISOString(),
+      setlist: {
+        id: playlist.id,
+        name: playlist.name,
+        item_count: playlist.items.length,
+        items: playlist.items.map((item, index) => ({
+          order: index + 1,
+          file_path: item.file_path,
+          file_name: item.file_path.split(/[\\/]/).pop(),
+          duration_seconds: item.duration_seconds,
+          added_at: item.added_at
+        }))
+      }
+    });
+  } catch (error) {
+    alert("セットリストJSONの書き出しに失敗しました: " + error);
+  }
+}
+
 function focusAudioFile(filePath) {
   focusedFilePath = filePath;
   document.querySelectorAll(".audio-item.focused").forEach(el => el.classList.remove("focused"));
@@ -1426,7 +1755,7 @@ function renderLibrarySidebar() {
       const label = document.createElement("span");
       label.textContent = getBookmarkDisplayName(bookmark);
       button.appendChild(label);
-      button.addEventListener("click", () => openFolder(bookmark.path));
+      button.addEventListener("click", () => openBookmarkedFolder(bookmark));
       button.addEventListener("contextmenu", event => {
         event.preventDefault();
         event.stopPropagation();
@@ -1468,7 +1797,7 @@ function renderLibrarySidebar() {
   allTags.slice(0, 14).forEach(tag => {
     const button = document.createElement("button");
     button.className = "sidebar-tag-item";
-    button.classList.toggle("active", tagFilter === tag);
+    button.classList.toggle("active", selectedTagFilters.has(tag));
     const dot = document.createElement("span");
     dot.className = "sidebar-tag-dot";
     dot.style.setProperty("--tag-hue", getTagHue(tag));
@@ -1480,8 +1809,9 @@ function renderLibrarySidebar() {
     count.textContent = tagCounts.get(tag) || 0;
     button.append(dot, label, count);
     button.addEventListener("click", () => {
-      tagFilter = tagFilter === tag ? "" : tag;
-      document.getElementById("tag-filter-select").value = tagFilter;
+      if (selectedTagFilters.has(tag)) selectedTagFilters.delete(tag);
+      else selectedTagFilters.add(tag);
+      updateMainTagFilterOptions();
       renderAudioFiles();
       renderLibrarySidebar();
     });
@@ -1971,6 +2301,9 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("select-folder-btn").addEventListener("click", selectFolder);
   document.getElementById("bookmark-current-btn").addEventListener("click", bookmarkCurrent);
   document.getElementById("copy-selected-btn").addEventListener("click", copySelected);
+  document.getElementById("main-select-all-checkbox").addEventListener("change", event => {
+    toggleSelectAllVisible(event.target.checked);
+  });
   document.getElementById("modal-ok-btn").addEventListener("click", closeModal);
   document.getElementById("modal-open-folder-btn").addEventListener("click", openCopiedFolder);
 
@@ -1979,12 +2312,15 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("workspace-select").addEventListener("change", (event) => {
-    if (event.target.value) openFolder(event.target.value);
+    if (!event.target.value) return;
+    const bookmark = getBookmarks().find(item => item.path === event.target.value);
+    if (bookmark) openBookmarkedFolder(bookmark);
   });
 
   document.getElementById("playlist-tab-btn").addEventListener("click", () => showInspectorTab("playlist"));
   document.getElementById("details-tab-btn").addEventListener("click", () => showInspectorTab("details"));
   document.getElementById("playlist-add-focused-btn").addEventListener("click", addFocusedToPlaylist);
+  document.getElementById("playlist-export-btn").addEventListener("click", exportActivePlaylist);
   document.getElementById("playlist-select").addEventListener("change", async event => {
     try {
       playlistStore = await invoke("set_active_playlist", { playlistId: event.target.value });
@@ -2241,12 +2577,42 @@ window.addEventListener("DOMContentLoaded", () => {
     renderAudioFiles();
   });
 
-  // タグフィルターのイベントリスナー
-  document.getElementById("tag-filter-select").addEventListener("change", (e) => {
-    tagFilter = e.target.value;
+  // 複数タグフィルター
+  const tagFilterRoot = document.getElementById("main-tag-filter");
+  const tagFilterPanel = document.getElementById("tag-filter-panel");
+  const tagFilterToggle = document.getElementById("tag-filter-toggle");
+  tagFilterToggle.addEventListener("click", event => {
+    event.stopPropagation();
+    tagFilterPanel.hidden = !tagFilterPanel.hidden;
+    tagFilterToggle.setAttribute("aria-expanded", String(!tagFilterPanel.hidden));
+  });
+  tagFilterPanel.addEventListener("click", event => event.stopPropagation());
+  document.getElementById("tag-filter-favorites").addEventListener("change", event => {
+    favoritesOnlyFilter = event.target.checked;
+    updateMainTagFilterLabel();
     renderAudioFiles();
     renderLibrarySidebar();
   });
+  document.getElementById("tag-filter-clear").addEventListener("click", () => {
+    selectedTagFilters.clear();
+    favoritesOnlyFilter = false;
+    updateMainTagFilterOptions();
+    renderAudioFiles();
+    renderLibrarySidebar();
+  });
+  document.getElementById("export-favorites-btn").addEventListener("click", exportFilteredFavorites);
+  document.addEventListener("click", event => {
+    if (!tagFilterRoot.contains(event.target)) {
+      tagFilterPanel.hidden = true;
+      tagFilterToggle.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  document.getElementById("repair-search-btn").addEventListener("click", searchRepairWorkspace);
+  document.getElementById("repair-apply-btn").addEventListener("click", applyRepairReplacements);
+  document.getElementById("repair-delete-btn").addEventListener("click", deleteSelectedMissingReferences);
+  document.getElementById("repair-close-btn").addEventListener("click", closeRepairModal);
+  document.getElementById("repair-cancel-btn").addEventListener("click", closeRepairModal);
 
   // ビュー切り替え
   const gridViewBtn = document.getElementById("grid-view-btn");

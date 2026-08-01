@@ -1,5 +1,6 @@
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Write as IoWrite};
 use std::path::{Path, PathBuf};
@@ -505,6 +506,40 @@ pub struct FavoriteItem {
     pub added_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MissingFavoriteAudit {
+    pub root_path: String,
+    pub root_exists: bool,
+    pub missing_items: Vec<FavoriteItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PathReplacement {
+    pub old_path: String,
+    pub new_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UnresolvedPath {
+    pub old_path: String,
+    pub candidates: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MissingSearchResult {
+    pub workspace_path: String,
+    pub replacements: Vec<PathReplacement>,
+    pub unresolved: Vec<UnresolvedPath>,
+    pub suggested_root: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RepairApplyResult {
+    pub updated_count: usize,
+    pub favorites: Vec<FavoriteItem>,
+    pub playlists: PlaylistStore,
+}
+
 // 新しいお気に入り構造体
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct FavoritesV2 {
@@ -817,6 +852,281 @@ fn get_favorites(app: AppHandle) -> Result<Vec<FavoriteItem>, String> {
     Ok(favorites.items)
 }
 
+fn normalize_path_key(path: &str) -> String {
+    path.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
+}
+
+fn path_is_within(path: &str, root: &str) -> bool {
+    let path = normalize_path_key(path);
+    let root = normalize_path_key(root);
+    path == root || path.starts_with(&(root + "\\"))
+}
+
+#[tauri::command]
+fn audit_library_root(root_path: String, app: AppHandle) -> Result<MissingFavoriteAudit, String> {
+    let favorites_path = get_favorites_file_path(&app)?;
+    let favorites = FavoritesV2::load(&favorites_path)?;
+    let missing_items = favorites
+        .items
+        .into_iter()
+        .filter(|item| path_is_within(&item.file_path, &root_path))
+        .filter(|item| !Path::new(&item.file_path).is_file())
+        .collect();
+
+    Ok(MissingFavoriteAudit {
+        root_exists: Path::new(&root_path).is_dir(),
+        root_path,
+        missing_items,
+    })
+}
+
+fn matching_suffix_score(left: &Path, right: &Path) -> usize {
+    let left_parts: Vec<String> = left
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let right_parts: Vec<String> = right
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    left_parts
+        .iter()
+        .rev()
+        .zip(right_parts.iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn common_parent(paths: &[String]) -> Option<String> {
+    let first = Path::new(paths.first()?).parent()?.to_path_buf();
+    let mut common: Vec<_> = first
+        .components()
+        .map(|part| part.as_os_str().to_os_string())
+        .collect();
+    for path in paths.iter().skip(1) {
+        let parent: Vec<_> = Path::new(path)
+            .parent()?
+            .components()
+            .map(|part| part.as_os_str().to_os_string())
+            .collect();
+        let shared = common
+            .iter()
+            .zip(parent.iter())
+            .take_while(|(left, right)| left.eq_ignore_ascii_case(right))
+            .count();
+        common.truncate(shared);
+    }
+    if common.is_empty() {
+        return None;
+    }
+    let mut result = PathBuf::new();
+    for part in common {
+        result.push(part);
+    }
+    Some(result.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn search_missing_favorites(
+    workspace_path: String,
+    missing_paths: Vec<String>,
+) -> Result<MissingSearchResult, String> {
+    let workspace = Path::new(&workspace_path);
+    if !workspace.is_dir() {
+        return Err("検索先フォルダが存在しません".to_string());
+    }
+
+    let wanted_names: HashSet<String> = missing_paths
+        .iter()
+        .filter_map(|path| Path::new(path).file_name())
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .collect();
+    let mut candidates_by_name: HashMap<String, Vec<String>> = HashMap::new();
+    for entry in WalkDir::new(workspace)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if wanted_names.contains(&name) {
+            candidates_by_name
+                .entry(name)
+                .or_default()
+                .push(entry.path().to_string_lossy().to_string());
+        }
+    }
+
+    let mut replacements = Vec::new();
+    let mut unresolved = Vec::new();
+    for old_path in missing_paths {
+        let name = Path::new(&old_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_lowercase());
+        let candidates = name
+            .as_ref()
+            .and_then(|name| candidates_by_name.get(name))
+            .cloned()
+            .unwrap_or_default();
+        let selected = if candidates.len() == 1 {
+            candidates.first().cloned()
+        } else if candidates.len() > 1 {
+            let mut scored: Vec<(usize, &String)> = candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        matching_suffix_score(Path::new(&old_path), Path::new(candidate)),
+                        candidate,
+                    )
+                })
+                .collect();
+            scored.sort_by(|left, right| right.0.cmp(&left.0));
+            if scored[0].0 > 1 && scored.get(1).map(|item| item.0) != Some(scored[0].0) {
+                Some(scored[0].1.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(new_path) = selected {
+            replacements.push(PathReplacement { old_path, new_path });
+        } else {
+            unresolved.push(UnresolvedPath {
+                old_path,
+                candidates,
+            });
+        }
+    }
+
+    let resolved_paths: Vec<String> = replacements
+        .iter()
+        .map(|replacement| replacement.new_path.clone())
+        .collect();
+    Ok(MissingSearchResult {
+        workspace_path,
+        suggested_root: common_parent(&resolved_paths),
+        replacements,
+        unresolved,
+    })
+}
+
+#[tauri::command]
+fn apply_path_replacements(
+    replacements: Vec<PathReplacement>,
+    app: AppHandle,
+) -> Result<RepairApplyResult, String> {
+    let replacement_map: HashMap<String, String> = replacements
+        .into_iter()
+        .map(|replacement| {
+            (
+                normalize_path_key(&replacement.old_path),
+                replacement.new_path,
+            )
+        })
+        .collect();
+    if replacement_map
+        .values()
+        .any(|new_path| !Path::new(new_path).is_file())
+    {
+        return Err("置換先に存在しないファイルが含まれています".to_string());
+    }
+
+    let favorites_path = get_favorites_file_path(&app)?;
+    let mut favorites = FavoritesV2::load(&favorites_path)?;
+    let mut updated_count = 0;
+    let mut merged_items: Vec<FavoriteItem> = Vec::new();
+    let mut merged_indices: HashMap<String, usize> = HashMap::new();
+    for mut item in favorites.items {
+        if let Some(new_path) = replacement_map.get(&normalize_path_key(&item.file_path)) {
+            item.file_path = new_path.clone();
+            updated_count += 1;
+        }
+        let key = normalize_path_key(&item.file_path);
+        if let Some(index) = merged_indices.get(&key).copied() {
+            for tag in item.tags {
+                if !merged_items[index].tags.contains(&tag) {
+                    merged_items[index].tags.push(tag);
+                }
+            }
+        } else {
+            merged_indices.insert(key, merged_items.len());
+            merged_items.push(item);
+        }
+    }
+    favorites.items = merged_items;
+    favorites.save(&favorites_path)?;
+
+    let playlists_path = get_playlists_file_path(&app)?;
+    let mut playlists = PlaylistStore::load(&playlists_path)?;
+    for playlist in &mut playlists.playlists {
+        for item in &mut playlist.items {
+            if let Some(new_path) = replacement_map.get(&normalize_path_key(&item.file_path)) {
+                item.file_path = new_path.clone();
+            }
+        }
+        let mut seen = HashSet::new();
+        playlist
+            .items
+            .retain(|item| seen.insert(normalize_path_key(&item.file_path)));
+    }
+    playlists.save(&playlists_path)?;
+
+    Ok(RepairApplyResult {
+        updated_count,
+        favorites: favorites.items,
+        playlists,
+    })
+}
+
+#[tauri::command]
+fn remove_missing_references(
+    file_paths: Vec<String>,
+    app: AppHandle,
+) -> Result<RepairApplyResult, String> {
+    let remove_keys: HashSet<String> = file_paths
+        .iter()
+        .map(|path| normalize_path_key(path))
+        .collect();
+    let favorites_path = get_favorites_file_path(&app)?;
+    let mut favorites = FavoritesV2::load(&favorites_path)?;
+    let before = favorites.items.len();
+    favorites
+        .items
+        .retain(|item| !remove_keys.contains(&normalize_path_key(&item.file_path)));
+    let updated_count = before - favorites.items.len();
+    favorites.save(&favorites_path)?;
+
+    let playlists_path = get_playlists_file_path(&app)?;
+    let mut playlists = PlaylistStore::load(&playlists_path)?;
+    for playlist in &mut playlists.playlists {
+        playlist
+            .items
+            .retain(|item| !remove_keys.contains(&normalize_path_key(&item.file_path)));
+    }
+    playlists.save(&playlists_path)?;
+
+    Ok(RepairApplyResult {
+        updated_count,
+        favorites: favorites.items,
+        playlists,
+    })
+}
+
+#[tauri::command]
+fn write_json_export(path: String, contents: String) -> Result<(), String> {
+    let export_path = Path::new(&path);
+    if let Some(parent) = export_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(export_path, contents).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn add_favorite(
     file_path: String,
@@ -963,6 +1273,11 @@ pub fn run() {
             rename_file,
             copy_files,
             get_favorites,
+            audit_library_root,
+            search_missing_favorites,
+            apply_path_replacements,
+            remove_missing_references,
+            write_json_export,
             add_favorite,
             remove_favorite,
             update_favorite_tags,
@@ -979,4 +1294,58 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_workspace(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "sound-pad-{}-{}-{}",
+            name,
+            std::process::id(),
+            timestamp_millis()
+        ))
+    }
+
+    #[test]
+    fn path_scope_requires_a_directory_boundary() {
+        assert!(path_is_within(
+            r"C:\project\BGM\song.mp3",
+            r"C:\project\BGM"
+        ));
+        assert!(!path_is_within(
+            r"C:\project\BGM-old\song.mp3",
+            r"C:\project\BGM"
+        ));
+    }
+
+    #[test]
+    fn recursive_search_resolves_unique_names_and_keeps_ambiguous_names() {
+        let workspace = test_workspace("search");
+        let bgm = workspace.join("project").join("material").join("BGM");
+        let other = workspace.join("archive");
+        fs::create_dir_all(&bgm).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(bgm.join("unique.mp3"), b"sound").unwrap();
+        fs::write(bgm.join("duplicate.mp3"), b"sound").unwrap();
+        fs::write(other.join("duplicate.mp3"), b"sound").unwrap();
+
+        let result = search_missing_favorites(
+            workspace.to_string_lossy().to_string(),
+            vec![
+                r"C:\old\BGM\unique.mp3".to_string(),
+                r"C:\old\duplicate.mp3".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result.replacements.len(), 1);
+        assert!(result.replacements[0].new_path.ends_with("unique.mp3"));
+        assert_eq!(result.unresolved.len(), 1);
+        assert_eq!(result.unresolved[0].candidates.len(), 2);
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
 }

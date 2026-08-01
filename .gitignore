@@ -28,6 +28,10 @@ dist-ssr
 src-tauri/target/
 src-tauri/WixTools/
 
+# Premiere Pro UXP package output
+premiere-uxp/package/
+premiere-uxp/*.ccx
+
 # macOS
 .DS_Store
 *.swp
