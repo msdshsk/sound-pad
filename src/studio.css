@@ -2017,24 +2017,8 @@ body[data-theme="dark"] .audio-item-tags .tag-badge {
   font-size: 10px;
 }
 
-.bulk-tag-remove-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--border);
-  font-family: inherit;
-}
-
-.bulk-tag-remove-option.selected {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 15%, var(--surface));
-  color: var(--danger);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 25%, transparent);
-}
-
-.bulk-tag-remove-option.selected:hover {
-  background: color-mix(in srgb, var(--danger) 22%, var(--surface));
-  color: var(--danger);
+.bulk-existing-tag-chip .tag-remove-btn {
+  color: currentColor;
 }
 
 body[data-theme="dark"] .tag-suggestion,
@@ -2042,12 +2026,6 @@ body[data-theme="dark"] .tag-chip {
   border-color: hsl(var(--tag-hue) 34% 35%);
   background: hsl(var(--tag-hue) 38% 23%);
   color: hsl(var(--tag-hue) 70% 78%);
-}
-
-body[data-theme="dark"] .bulk-tag-remove-option.selected {
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 18%, var(--surface));
-  color: var(--danger);
 }
 
 @media (max-width: 1050px) {

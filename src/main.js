@@ -24,8 +24,8 @@ let editingTagsFilePath = null;
 let editingTags = [];
 let selectedFavorites = new Set(); // お気に入り画面での選択状態
 let bulkTags = []; // 一括付与するタグ
-let bulkCommonTags = []; // 選択項目すべてに共通するタグ
-let bulkTagsToRemove = []; // 一括削除する共通タグ
+let bulkExistingTags = []; // 選択項目のいずれかに存在するタグ
+let bulkTagsToRemove = []; // 一括削除するタグ
 let focusedFilePath = null;
 let masterVolume = Number.parseInt(localStorage.getItem("sound-pad-volume") || "35", 10);
 let lastAudibleVolume = masterVolume > 0 ? masterVolume : 35;
@@ -1987,7 +1987,7 @@ function updateFavoritesSelectionUI() {
 // 一括タグ編集モーダルを開く
 function openBulkTagModal() {
   bulkTags = [];
-  bulkCommonTags = getCommonTagsForSelectedFavorites();
+  bulkExistingTags = getSelectedFavoriteTags();
   bulkTagsToRemove = [];
   document.getElementById("bulk-tag-target-count").textContent =
     `${selectedFavorites.size}個のファイルのタグを編集します`;
@@ -2006,20 +2006,27 @@ function closeBulkTagModal() {
   const modal = document.getElementById("bulk-tag-modal");
   modal.classList.remove("show");
   bulkTags = [];
-  bulkCommonTags = [];
+  bulkExistingTags = [];
   bulkTagsToRemove = [];
 }
 
-function getCommonTagsForSelectedFavorites() {
+function getSelectedFavoriteTags() {
   const selectedItems = Array.from(selectedFavorites)
     .map(filePath => favoriteFiles.get(filePath))
     .filter(Boolean);
   if (selectedItems.length === 0) return [];
 
-  const firstTags = [...new Set(selectedItems[0].tags || [])];
-  return firstTags.filter(tag =>
-    selectedItems.slice(1).every(item => (item.tags || []).includes(tag))
-  );
+  const presentOnAny = [];
+  const seen = new Set();
+  selectedItems.forEach(item => {
+    (item.tags || []).forEach(tag => {
+      if (!seen.has(tag)) {
+        seen.add(tag);
+        presentOnAny.push(tag);
+      }
+    });
+  });
+  return presentOnAny;
 }
 
 function applyBulkTagChanges(currentTags, tagsToAdd, tagsToRemove) {
@@ -2060,7 +2067,7 @@ function renderBulkTagSuggestions() {
   container.innerHTML = "";
 
   const availableTags = allTags.filter(tag =>
-    !bulkTags.includes(tag) && !bulkCommonTags.includes(tag)
+    !bulkTags.includes(tag) && !bulkExistingTags.includes(tag)
   );
 
   if (availableTags.length === 0) {
@@ -2090,7 +2097,7 @@ function renderBulkTagSuggestions() {
 function addBulkTagFromInput() {
   const input = document.getElementById("bulk-tag-input");
   const tag = input.value.trim();
-  if (tag && bulkCommonTags.includes(tag)) {
+  if (tag && bulkExistingTags.includes(tag)) {
     bulkTagsToRemove = bulkTagsToRemove.filter(item => item !== tag);
     input.value = "";
     renderBulkTagRemovals();
@@ -2107,31 +2114,28 @@ function addBulkTagFromInput() {
 function renderBulkTagRemovals() {
   const container = document.getElementById("bulk-tag-remove-list");
   container.innerHTML = "";
-  if (bulkCommonTags.length === 0) {
-    container.innerHTML = '<span class="no-tags">共通タグはありません</span>';
+  if (bulkExistingTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">選択項目にタグはありません</span>';
     return;
   }
 
-  bulkCommonTags.forEach(tag => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tag-suggestion bulk-tag-remove-option";
-    button.classList.toggle("selected", bulkTagsToRemove.includes(tag));
-    button.style.setProperty("--tag-hue", getTagHue(tag));
-    button.innerHTML = `<i class="mdi mdi-tag-minus-outline"></i><span></span>`;
-    button.querySelector("span").textContent = tag;
-    button.addEventListener("click", () => {
-      if (bulkTagsToRemove.includes(tag)) {
-        bulkTagsToRemove = bulkTagsToRemove.filter(item => item !== tag);
-      } else {
-        bulkTags = bulkTags.filter(item => item !== tag);
-        bulkTagsToRemove.push(tag);
-      }
-      renderBulkTags();
-      renderBulkTagSuggestions();
+  const remainingTags = bulkExistingTags.filter(tag => !bulkTagsToRemove.includes(tag));
+  if (remainingTags.length === 0) {
+    container.innerHTML = '<span class="no-tags">表示中のタグはすべて削除されます</span>';
+    return;
+  }
+
+  remainingTags.forEach(tag => {
+    const tagSpan = document.createElement("span");
+    tagSpan.className = "tag-chip bulk-existing-tag-chip";
+    tagSpan.style.setProperty("--tag-hue", getTagHue(tag));
+    tagSpan.innerHTML = `<span></span><button type="button" class="tag-remove-btn" title="このタグを一括削除"><i class="mdi mdi-close"></i></button>`;
+    tagSpan.querySelector("span").textContent = tag;
+    tagSpan.querySelector(".tag-remove-btn").addEventListener("click", () => {
+      bulkTagsToRemove.push(tag);
       renderBulkTagRemovals();
     });
-    container.appendChild(button);
+    container.appendChild(tagSpan);
   });
 }
 
