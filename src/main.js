@@ -152,6 +152,32 @@ function saveBookmarks(bookmarks) {
   localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(bookmarks));
 }
 
+function normalizeFilePath(path) {
+  return String(path || "")
+    .trim()
+    .replace(/\//g, "\\")
+    .replace(/\\+$/, "")
+    .toLowerCase();
+}
+
+function isPathWithinFolder(filePath, folderPath) {
+  const normalizedFile = normalizeFilePath(filePath);
+  const normalizedFolder = normalizeFilePath(folderPath);
+  return Boolean(
+    normalizedFile &&
+    normalizedFolder &&
+    (normalizedFile === normalizedFolder || normalizedFile.startsWith(`${normalizedFolder}\\`))
+  );
+}
+
+function getCurrentProjectFolder() {
+  if (!currentFolder) return null;
+  const containingBookmark = getBookmarks()
+    .filter(bookmark => isPathWithinFolder(currentFolder, bookmark.path))
+    .sort((left, right) => normalizeFilePath(right.path).length - normalizeFilePath(left.path).length)[0];
+  return containingBookmark?.path || currentFolder;
+}
+
 function recoverBookmarksFromFavorites() {
   if (localStorage.getItem(BOOKMARKS_RECOVERY_KEY)) return;
   const recoveredPaths = new Set();
@@ -1633,8 +1659,23 @@ async function writeJsonExport(defaultName, payload) {
 
 async function exportFilteredFavorites() {
   const tags = Array.from(selectedTagFilters).sort((left, right) => left.localeCompare(right, "ja"));
+  const projectFolder = getCurrentProjectFolder();
+  if (!projectFolder) {
+    alert("JSONを書き出す案件フォルダを開いてください。");
+    return;
+  }
+
+  const selectedProjectPaths = new Set(
+    Array.from(selectedFiles)
+      .filter(filePath => isPathWithinFolder(filePath, projectFolder))
+      .map(normalizeFilePath)
+  );
+  const useCheckedItems = selectedProjectPaths.size > 0;
+  const effectiveTags = useCheckedItems ? [] : tags;
   const items = Array.from(favoriteFiles.values())
-    .filter(item => tags.every(tag => item.tags?.includes(tag)))
+    .filter(item => isPathWithinFolder(item.file_path, projectFolder))
+    .filter(item => !useCheckedItems || selectedProjectPaths.has(normalizeFilePath(item.file_path)))
+    .filter(item => effectiveTags.every(tag => item.tags?.includes(tag)))
     .sort((left, right) => left.file_path.localeCompare(right.file_path, "ja"))
     .map(item => ({
       file_path: item.file_path,
@@ -1642,13 +1683,19 @@ async function exportFilteredFavorites() {
       tags: item.tags || [],
       added_at: item.added_at
     }));
-  const suffix = tags.length ? tags.join("_") : "all";
+  const projectName = getFolderName(projectFolder);
+  const suffix = useCheckedItems ? "selected" : effectiveTags.length ? effectiveTags.join("_") : "all";
   try {
-    await writeJsonExport(safeExportName(`sound-pad-favorites-${suffix}`), {
+    await writeJsonExport(safeExportName(`sound-pad-favorites-${projectName}-${suffix}`), {
       format: "sound-pad-favorites",
       schema_version: 1,
       exported_at: new Date().toISOString(),
-      filters: { tags, match: "all" },
+      filters: {
+        tags: effectiveTags,
+        match: "all",
+        project_folder: projectFolder,
+        selection: useCheckedItems ? "checked" : "project"
+      },
       item_count: items.length,
       items
     });

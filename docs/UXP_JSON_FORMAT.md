@@ -5,7 +5,7 @@ Sound PadからPremiere Pro UXPへ渡すJSONは、`format`と`schema_version`で
 
 ## お気に入り
 
-`format`は`sound-pad-favorites`です。画面上で選択したタグをすべて含むお気に入りだけを書き出します。
+`format`は`sound-pad-favorites`です。現在開いている案件フォルダ配下のお気に入りだけを書き出します。案件内でメイン一覧のチェックが1件以上ある場合はチェック済みのお気に入りだけを出力し、チェックがない場合は画面上で選択したタグをすべて含むお気に入りを出力します。
 
 ```json
 {
@@ -14,7 +14,9 @@ Sound PadからPremiere Pro UXPへ渡すJSONは、`format`と`schema_version`で
   "exported_at": "2026-08-01T00:00:00.000Z",
   "filters": {
     "tags": ["明るい", "OP/ED"],
-    "match": "all"
+    "match": "all",
+    "project_folder": "F:\\project\\material\\BGM",
+    "selection": "project"
   },
   "item_count": 1,
   "items": [

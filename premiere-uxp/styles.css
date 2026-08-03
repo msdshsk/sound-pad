@@ -97,6 +97,7 @@ h1 {
 
 .primary-button,
 .secondary-button,
+.preview-button,
 .place-button,
 .name-button,
 .placement-button {
@@ -338,6 +339,24 @@ select {
 .item-actions {
   flex: none;
   gap: 5px;
+}
+
+.preview-button {
+  min-width: 44px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+
+.preview-button:hover {
+  border-color: var(--accent);
+}
+
+.preview-button.playing {
+  color: #fff;
+  border-color: var(--warning);
+  background: var(--warning);
 }
 
 .place-button {

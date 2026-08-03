@@ -1,5 +1,5 @@
 const ppro = require("premierepro");
-const { localFileSystem, fileTypes } = require("uxp").storage;
+const { localFileSystem } = require("uxp").storage;
 
 const STORAGE_KEYS = {
   fileToken: "sound-pad:last-json-token",
@@ -14,6 +14,8 @@ const state = {
   tracks: [],
   expandedPaths: new Set(),
   busy: false,
+  previewPath: null,
+  previewBusy: false,
 };
 
 const elements = {};
@@ -40,6 +42,9 @@ function setBusy(busy, message) {
   if (elements.itemList) {
     for (const button of elements.itemList.querySelectorAll(".place-button")) {
       button.disabled = busy || button.dataset.canPlace !== "true";
+    }
+    for (const button of elements.itemList.querySelectorAll(".preview-button")) {
+      button.disabled = busy || state.previewBusy || button.dataset.canPreview !== "true";
     }
   }
   if (message) {
@@ -463,6 +468,21 @@ function createItemRow(item, index) {
 
   const actions = document.createElement("div");
   actions.className = "item-actions";
+  const previewButton = document.createElement("button");
+  const isPreviewing = state.previewPath === item.normalizedPath;
+  previewButton.type = "button";
+  previewButton.className = "preview-button";
+  previewButton.classList.toggle("playing", isPreviewing);
+  previewButton.textContent = isPreviewing ? "停止" : "試聴";
+  previewButton.title = item.projectItem
+    ? isPreviewing
+      ? "Source Monitorの試聴を停止"
+      : "Source Monitorで先頭から試聴"
+    : "Premiere Proのプロジェクトに素材がありません";
+  previewButton.dataset.canPreview = String(Boolean(item.projectItem));
+  previewButton.disabled = state.busy || state.previewBusy || !item.projectItem;
+  previewButton.addEventListener("click", () => togglePreview(item.id));
+
   const placeButton = document.createElement("button");
   placeButton.type = "button";
   placeButton.className = "place-button";
@@ -475,7 +495,7 @@ function createItemRow(item, index) {
   );
   placeButton.disabled = state.busy || !item.projectItem || !state.sequence || !state.tracks.length;
   placeButton.addEventListener("click", () => placeItem(item.id));
-  actions.appendChild(placeButton);
+  actions.append(previewButton, placeButton);
 
   main.append(order, content, actions);
 
@@ -537,6 +557,64 @@ async function jumpToPlacement(seconds) {
   }
 }
 
+async function stopSourceMonitorPlayback() {
+  try {
+    const stopped = await ppro.SourceMonitor.play(0);
+    if (stopped === false) {
+      await ppro.SourceMonitor.closeClip();
+    }
+  } catch (error) {
+    await ppro.SourceMonitor.closeClip();
+  }
+}
+
+async function togglePreview(itemId) {
+  const item = state.items.find((candidate) => candidate.id === itemId);
+  if (!item || !item.projectItem || state.busy || state.previewBusy) {
+    return;
+  }
+
+  state.previewBusy = true;
+  render();
+  try {
+    if (state.previewPath === item.normalizedPath) {
+      await stopSourceMonitorPlayback();
+      state.previewPath = null;
+      showNotice(`${item.fileName} の試聴を停止しました。`);
+      return;
+    }
+
+    if (state.previewPath) {
+      await stopSourceMonitorPlayback();
+      state.previewPath = null;
+    }
+
+    const context = await getPremiereContext();
+    const projectItem = await findExactProjectItem(item.filePath, context.project);
+    if (!projectItem) {
+      item.projectItem = null;
+      throw new Error("素材がプロジェクト内からなくなりました。再照合してください。");
+    }
+
+    await ppro.SourceMonitor.openProjectItem(projectItem);
+    if (typeof ppro.SourceMonitor.setPosition === "function") {
+      await ppro.SourceMonitor.setPosition(ppro.TickTime.createWithSeconds(0));
+    }
+    const played = await ppro.SourceMonitor.play(1);
+    if (played === false) {
+      throw new Error("Source Monitorで再生を開始できませんでした。");
+    }
+    state.previewPath = item.normalizedPath;
+    showNotice(`${item.fileName} をSource Monitorで試聴しています。`);
+  } catch (error) {
+    state.previewPath = null;
+    showNotice(error.message || String(error), true);
+  } finally {
+    state.previewBusy = false;
+    render();
+  }
+}
+
 async function placeItem(itemId) {
   const item = state.items.find((candidate) => candidate.id === itemId);
   if (!item || !item.projectItem || state.busy) {
@@ -545,6 +623,10 @@ async function placeItem(itemId) {
 
   setBusy(true, `${item.fileName} を配置しています…`);
   try {
+    if (state.previewPath) {
+      await stopSourceMonitorPlayback();
+      state.previewPath = null;
+    }
     const context = await getPremiereContext();
     const trackIndex = Number(elements.trackSelect.value);
     if (!Number.isInteger(trackIndex) || trackIndex < 0) {
@@ -594,6 +676,10 @@ async function placeItem(itemId) {
 async function loadJsonFile(file, rememberFile) {
   setBusy(true, `${file.name} を読み込んでいます…`);
   try {
+    if (state.previewPath) {
+      await stopSourceMonitorPlayback();
+      state.previewPath = null;
+    }
     const content = await file.read();
     const parsed = parseSoundPadJson(JSON.parse(content), file.name);
     state.source = parsed.source;
@@ -616,7 +702,7 @@ async function loadJsonFile(file, rememberFile) {
 async function chooseJsonFile() {
   try {
     const file = await localFileSystem.getFileForOpening({
-      types: fileTypes.text,
+      types: ["json"],
     });
     if (file) {
       await loadJsonFile(file, true);
