@@ -16,6 +16,8 @@ const state = {
   busy: false,
   previewPath: null,
   previewBusy: false,
+  projectItemsByPath: new Map(),
+  projectItemIndexGuid: "",
 };
 
 const elements = {};
@@ -198,37 +200,72 @@ async function refreshTracks(sequence) {
   elements.trackSelect.disabled = state.busy || tracks.length === 0;
 }
 
+async function buildProjectItemIndex(project) {
+  const itemsByPath = new Map();
+  const rootItem = await project.getRootItem();
+  const folders = [rootItem];
+
+  while (folders.length) {
+    const folder = folders.shift();
+    const children = await folder.getItems();
+    for (const child of children || []) {
+      let mediaPath = "";
+      try {
+        const clipItem = ppro.ClipProjectItem.cast(child);
+        mediaPath = await clipItem.getMediaFilePath();
+      } catch (error) {
+        // Bin、シーケンスなど、ファイルメディアではない項目はここを通る。
+      }
+
+      if (mediaPath) {
+        const normalizedPath = normalizePath(mediaPath);
+        if (normalizedPath && !itemsByPath.has(normalizedPath)) {
+          itemsByPath.set(normalizedPath, child);
+        }
+        continue;
+      }
+
+      try {
+        const childFolder = ppro.FolderItem.cast(child);
+        await childFolder.getItems();
+        folders.push(childFolder);
+      } catch (error) {
+        // 子項目を持たないProjectItemは走査対象外。
+      }
+    }
+  }
+
+  state.projectItemsByPath = itemsByPath;
+  state.projectItemIndexGuid = guidToString(project.guid);
+  return itemsByPath;
+}
+
 async function findExactProjectItem(filePath, project = state.project) {
-  const expectedPath = normalizePath(filePath);
-  let candidates = [];
-  try {
-    candidates = await ppro.ClipProjectItem.findItemsMatchingMediaPath(
-      filePath,
-      false
-    );
-  } catch (error) {
-    console.warn("ProjectItemのパス検索に失敗しました", filePath, error);
+  if (!project) {
     return null;
   }
 
-  for (const candidate of candidates || []) {
+  const expectedPath = normalizePath(filePath);
+  const projectGuid = guidToString(project.guid);
+  if (state.projectItemIndexGuid !== projectGuid) {
+    await buildProjectItemIndex(project);
+  }
+
+  let candidate = state.projectItemsByPath.get(expectedPath) || null;
+  if (candidate) {
     try {
       const clipItem = ppro.ClipProjectItem.cast(candidate);
-      const [actualPath, candidateProject] = await Promise.all([
-        clipItem.getMediaFilePath(),
-        clipItem.getProject(),
-      ]);
-      const isActiveProject =
-        !project ||
-        guidToString(candidateProject.guid) === guidToString(project.guid);
-      if (isActiveProject && normalizePath(actualPath) === expectedPath) {
+      const actualPath = await clipItem.getMediaFilePath();
+      if (normalizePath(actualPath) === expectedPath) {
         return candidate;
       }
     } catch (error) {
-      console.debug("メディア項目ではない候補を除外しました", error);
+      candidate = null;
     }
   }
-  return null;
+
+  const refreshedItems = await buildProjectItemIndex(project);
+  return refreshedItems.get(expectedPath) || null;
 }
 
 async function mapWithConcurrency(values, concurrency, mapper) {
@@ -249,22 +286,7 @@ async function mapWithConcurrency(values, concurrency, mapper) {
 }
 
 async function resolveProjectItems() {
-  const uniqueItems = [];
-  const seenPaths = new Set();
-  for (const item of state.items) {
-    if (!seenPaths.has(item.normalizedPath)) {
-      seenPaths.add(item.normalizedPath);
-      uniqueItems.push(item);
-    }
-  }
-
-  const foundEntries = await mapWithConcurrency(uniqueItems, 4, async (item) => ({
-    normalizedPath: item.normalizedPath,
-    projectItem: await findExactProjectItem(item.filePath),
-  }));
-  const projectItemsByPath = new Map(
-    foundEntries.map((entry) => [entry.normalizedPath, entry.projectItem])
-  );
+  const projectItemsByPath = await buildProjectItemIndex(state.project);
   for (const item of state.items) {
     item.projectItem = projectItemsByPath.get(item.normalizedPath) || null;
   }
@@ -361,6 +383,8 @@ async function refreshAll(options = {}) {
     state.project = null;
     state.sequence = null;
     state.tracks = [];
+    state.projectItemsByPath = new Map();
+    state.projectItemIndexGuid = "";
     elements.sequenceName.textContent = "シーケンス未取得";
     render();
     showNotice(error.message || String(error), true);
