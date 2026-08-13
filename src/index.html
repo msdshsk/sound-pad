@@ -134,11 +134,13 @@
         </main>
 
         <aside class="inspector-panel">
+          <div id="inspector-resize-handle" class="inspector-resize-handle" role="separator" aria-label="右パネルの幅を変更" aria-orientation="vertical" tabindex="0"></div>
           <div class="inspector-header">
             <button id="playlist-tab-btn" class="inspector-tab active">プレイリスト</button>
             <button id="details-tab-btn" class="inspector-tab">選択中の音声</button>
           </div>
-          <div id="playlist-panel" class="playlist-panel">
+          <div class="inspector-view">
+            <div id="playlist-panel" class="playlist-panel">
             <div class="playlist-toolbar">
               <select id="playlist-select" aria-label="プレイリスト"></select>
               <button id="playlist-new-btn" class="playlist-icon-btn" title="新しいプレイリスト"><i class="mdi mdi-plus"></i></button>
@@ -153,8 +155,8 @@
               <i class="mdi mdi-playlist-plus"></i><span>選択中の曲を追加</span>
             </button>
             <div id="playlist-items" class="playlist-items"></div>
-          </div>
-          <div id="details-panel" hidden>
+            </div>
+            <div id="details-panel" hidden>
             <div id="inspector-empty" class="inspector-empty">
               <i class="mdi mdi-music-note-outline"></i>
               <p>一覧から音声を選択すると、詳細を表示します。</p>
@@ -178,7 +180,52 @@
                 <i class="mdi mdi-content-copy"></i><span>ファイル名をコピー</span>
               </button>
             </div>
+            </div>
           </div>
+          <section id="suggestions-dock" class="suggestions-dock">
+            <div id="suggestions-resize-handle" class="suggestions-resize-handle" role="separator" aria-label="次の曲候補の高さを変更" aria-orientation="horizontal" tabindex="0"><span></span></div>
+            <div class="suggestions-dock-header">
+              <div>
+                <span class="suggestions-kicker">NEXT CANDIDATES</span>
+                <strong>次の曲候補</strong>
+              </div>
+              <div class="suggestions-header-actions">
+                <button id="suggestions-pin-btn" class="suggestions-icon-btn" type="button" title="基準曲を固定" disabled><i class="mdi mdi-pin-outline"></i></button>
+                <button id="suggestions-collapse-btn" class="suggestions-icon-btn" type="button" title="候補を折り畳む"><i class="mdi mdi-chevron-down"></i></button>
+              </div>
+            </div>
+            <div id="suggestions-body" class="suggestions-body">
+              <div id="suggestions-seed" class="suggestions-seed">
+                <span class="suggestions-seed-node"><i class="mdi mdi-music-note"></i></span>
+                <div><small>基準曲</small><strong>曲を選択してください</strong></div>
+              </div>
+              <div class="suggestions-controls">
+                <label>対象
+                  <select id="suggestions-scope">
+                    <option value="folder">このフォルダ</option>
+                    <option value="favorites">お気に入り</option>
+                  </select>
+                </label>
+                <label>BPM
+                  <select id="suggestions-bpm-filter">
+                    <option value="none">指定なし</option>
+                    <option value="0.08">±8%</option>
+                    <option value="0.12" selected>±12%</option>
+                    <option value="0.20">±20%</option>
+                  </select>
+                </label>
+                <label class="suggestions-check"><input id="suggestions-half-double" type="checkbox" checked /> 倍テン</label>
+              </div>
+              <div id="suggestions-analysis-status" class="suggestions-analysis-status">
+                <span>解析状態を確認中</span>
+                <button id="suggestions-analyze-btn" type="button" disabled><i class="mdi mdi-waveform"></i> 未解析曲を解析</button>
+              </div>
+              <div id="suggestions-list" class="suggestions-list">
+                <div class="suggestions-empty"><i class="mdi mdi-vector-polyline"></i><span>一覧から曲を選ぶと、ここに次の候補が現れます。</span></div>
+              </div>
+              <p class="suggestions-license">初回解析時にMTGの音楽モデル（CC BY-NC-SA 4.0）を取得します。</p>
+            </div>
+          </section>
         </aside>
       </div>
 

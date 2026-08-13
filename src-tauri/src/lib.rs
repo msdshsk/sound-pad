@@ -14,6 +14,11 @@ use symphonia::core::probe::Hint;
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
+mod music_analysis;
+use music_analysis::{
+    analyze_music_files, get_music_analysis, get_music_analysis_status, get_similar_tracks,
+};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AudioFile {
     name: String,
@@ -1290,6 +1295,10 @@ pub fn run() {
             add_playlist_item,
             remove_playlist_item,
             move_playlist_item,
+            get_music_analysis_status,
+            get_music_analysis,
+            analyze_music_files,
+            get_similar_tracks,
             open_in_explorer
         ])
         .run(tauri::generate_context!())

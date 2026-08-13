@@ -32,12 +32,116 @@ let lastAudibleVolume = masterVolume > 0 ? masterVolume : 35;
 let playlistStore = null;
 let breadcrumbResizeObserver = null;
 let repairState = null;
+let suggestionSeedPath = null;
+let suggestionsPinned = false;
+let suggestionsRequestId = 0;
+let musicAnalysisRunning = false;
 
 // LocalStorage キー
 const HISTORY_KEY = "sound-pad-history";
 const BOOKMARKS_KEY = "sound-pad-bookmarks";
 const BOOKMARKS_RECOVERY_KEY = "sound-pad-bookmarks-recovered-v1";
 const THEME_KEY = "sound-pad-theme";
+const SUGGESTIONS_COLLAPSED_KEY = "sound-pad-suggestions-collapsed";
+const SUGGESTIONS_SCOPE_KEY = "sound-pad-suggestions-scope";
+const INSPECTOR_WIDTH_KEY = "sound-pad-inspector-width";
+const SUGGESTIONS_HEIGHT_KEY = "sound-pad-suggestions-height";
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function setupPanelResizing() {
+  const root = document.documentElement;
+  const inspector = document.querySelector(".inspector-panel");
+  const inspectorHandle = document.getElementById("inspector-resize-handle");
+  const suggestionsDock = document.getElementById("suggestions-dock");
+  const suggestionsHandle = document.getElementById("suggestions-resize-handle");
+  if (!inspector || !inspectorHandle || !suggestionsDock || !suggestionsHandle) return;
+
+  const inspectorLimits = () => {
+    const sidebarWidth = Number.parseFloat(getComputedStyle(root).getPropertyValue("--sidebar-width")) || 220;
+    return { minimum: 240, maximum: Math.max(240, Math.min(640, window.innerWidth - sidebarWidth - 360)) };
+  };
+  const suggestionLimits = () => {
+    const header = inspector.querySelector(".inspector-header");
+    return {
+      minimum: 174,
+      maximum: Math.max(174, inspector.clientHeight - (header?.offsetHeight || 70) - 150)
+    };
+  };
+  const setInspectorWidth = (value, persist = false) => {
+    if (window.innerWidth <= 820) return;
+    const limits = inspectorLimits();
+    const width = Math.round(clamp(value, limits.minimum, limits.maximum));
+    root.style.setProperty("--inspector-width", `${width}px`);
+    inspectorHandle.setAttribute("aria-valuenow", String(width));
+    if (persist) localStorage.setItem(INSPECTOR_WIDTH_KEY, String(width));
+  };
+  const setSuggestionsHeight = (value, persist = false) => {
+    const limits = suggestionLimits();
+    const height = Math.round(clamp(value, limits.minimum, limits.maximum));
+    root.style.setProperty("--suggestions-height", `${height}px`);
+    suggestionsHandle.setAttribute("aria-valuenow", String(height));
+    if (persist) localStorage.setItem(SUGGESTIONS_HEIGHT_KEY, String(height));
+  };
+
+  setInspectorWidth(Number.parseFloat(localStorage.getItem(INSPECTOR_WIDTH_KEY)) || 280);
+  setSuggestionsHeight(Number.parseFloat(localStorage.getItem(SUGGESTIONS_HEIGHT_KEY)) || 360);
+
+  inspectorHandle.addEventListener("pointerdown", event => {
+    if (window.innerWidth <= 820 || event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = inspector.getBoundingClientRect().width;
+    let currentWidth = startWidth;
+    document.body.classList.add("panel-resizing-width");
+    const move = moveEvent => {
+      currentWidth = startWidth + startX - moveEvent.clientX;
+      setInspectorWidth(currentWidth);
+    };
+    const finish = () => {
+      document.body.classList.remove("panel-resizing-width");
+      setInspectorWidth(currentWidth, true);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  });
+
+  suggestionsHandle.addEventListener("pointerdown", event => {
+    if (suggestionsDock.classList.contains("collapsed") || event.button !== 0) return;
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = suggestionsDock.getBoundingClientRect().height;
+    let currentHeight = startHeight;
+    document.body.classList.add("panel-resizing-height");
+    const move = moveEvent => {
+      currentHeight = startHeight + startY - moveEvent.clientY;
+      setSuggestionsHeight(currentHeight);
+    };
+    const finish = () => {
+      document.body.classList.remove("panel-resizing-height");
+      setSuggestionsHeight(currentHeight, true);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  });
+
+  inspectorHandle.addEventListener("dblclick", () => setInspectorWidth(280, true));
+  suggestionsHandle.addEventListener("dblclick", () => setSuggestionsHeight(360, true));
+  window.addEventListener("resize", () => {
+    setInspectorWidth(inspector.getBoundingClientRect().width || 280);
+    setSuggestionsHeight(suggestionsDock.getBoundingClientRect().height || 360);
+  });
+}
 
 // パスからフォルダ名を取得
 function getFolderName(path) {
@@ -249,6 +353,7 @@ async function getFavoriteFiles() {
     // メイン画面のタグフィルターも更新
     updateMainTagFilterOptions();
     renderLibrarySidebar();
+    refreshMusicAnalysisStatus();
   } catch (error) {
     console.error("Error loading favorites:", error);
   }
@@ -265,6 +370,7 @@ async function addFavorite(filePath, tags = []) {
     });
     renderAudioFiles();
     renderLibrarySidebar();
+    refreshMusicAnalysisStatus();
   } catch (error) {
     console.error("Error adding favorite:", error);
     alert("お気に入りの追加中にエラーが発生しました: " + error);
@@ -279,6 +385,7 @@ async function removeFavorite(filePath) {
     renderAudioFiles();
     renderFavoritesList();
     renderLibrarySidebar();
+    refreshMusicAnalysisStatus();
   } catch (error) {
     console.error("Error removing favorite:", error);
     alert("お気に入りの削除中にエラーが発生しました: " + error);
@@ -508,7 +615,9 @@ function renderRepairModal() {
     results.appendChild(label);
   });
   if (replacements.length === 0 && unresolved.length === 0) {
-    results.innerHTML = '<div class="repair-complete"><i class="mdi mdi-check-circle"></i>参照切れは解消されました</div>';
+    results.innerHTML = audit.root_exists
+      ? '<div class="repair-complete"><i class="mdi mdi-check-circle"></i>参照切れは解消されました</div>'
+      : '<div class="repair-root-missing"><i class="mdi mdi-folder-search-outline"></i><strong>保存フォルダの移動先を選択してください</strong><span>お気に入りの参照切れはありません。保存フォルダだけを新しい場所へ差し替えます。</span></div>';
   }
   const canReplaceEmptyRoot = !audit.root_exists && audit.missing_items.length === 0 && search?.suggested_root;
   document.getElementById("repair-apply-btn").disabled = replacements.length === 0 && !canReplaceEmptyRoot;
@@ -812,6 +921,7 @@ async function loadAudioFiles(directory) {
     subDirectories = contents.directories;
     renderAudioFiles();
     renderLibrarySidebar();
+    refreshMusicAnalysisStatus();
   } catch (error) {
     console.error("Error loading audio files:", error);
     alert("ファイルの読み込み中にエラーが発生しました: " + error);
@@ -1477,6 +1587,202 @@ function getParentFolder(filePath) {
   return null;
 }
 
+function getSuggestionScopePaths() {
+  const scope = document.getElementById("suggestions-scope")?.value || "folder";
+  if (scope === "favorites") {
+    return Array.from(favoriteFiles.keys());
+  }
+  return audioFiles
+    .filter(file => !file.duration_seconds || file.duration_seconds >= 30)
+    .map(file => file.path);
+}
+
+function getSuggestionAnalysisPaths() {
+  const scope = document.getElementById("suggestions-scope")?.value || "folder";
+  if (scope === "favorites") return Array.from(favoriteFiles.keys());
+  return audioFiles
+    .filter(file => !file.duration_seconds || file.duration_seconds >= 30)
+    .map(file => file.path);
+}
+
+function setSuggestionSeed(filePath, { force = false } = {}) {
+  if (!filePath || (suggestionsPinned && !force)) return;
+  suggestionSeedPath = filePath;
+  const pinButton = document.getElementById("suggestions-pin-btn");
+  if (pinButton) pinButton.disabled = false;
+  renderSuggestionSeed();
+  refreshSuggestions();
+}
+
+function renderSuggestionSeed() {
+  const container = document.getElementById("suggestions-seed");
+  if (!container) return;
+  const label = container.querySelector("strong");
+  const icon = container.querySelector(".suggestions-seed-node i");
+  if (!suggestionSeedPath) {
+    label.textContent = "曲を選択してください";
+    label.title = "";
+    icon.className = "mdi mdi-music-note";
+    return;
+  }
+  label.textContent = suggestionSeedPath.split(/[\\/]/).pop();
+  label.title = suggestionSeedPath;
+  icon.className = suggestionsPinned ? "mdi mdi-pin" : "mdi mdi-music-note";
+}
+
+function renderSuggestionsMessage(icon, message) {
+  const list = document.getElementById("suggestions-list");
+  if (!list) return;
+  list.innerHTML = `<div class="suggestions-empty"><i class="mdi ${icon}"></i><span></span></div>`;
+  list.querySelector("span").textContent = message;
+}
+
+function formatMoodLabel(label) {
+  const translations = {
+    action: "Action", calm: "Calm", dark: "Dark", dramatic: "Dramatic",
+    energetic: "Energetic", epic: "Epic", fun: "Fun", funny: "Funny",
+    happy: "Happy", melancholic: "Melancholic", melodic: "Melodic",
+    powerful: "Powerful", relaxing: "Relaxing", retro: "Retro", sad: "Sad",
+    slow: "Slow", soft: "Soft", sport: "Sport", upbeat: "Upbeat", uplifting: "Uplifting"
+  };
+  return translations[label] || label.replace(/(^|_)([a-z])/g, (_, space, letter) => `${space ? " " : ""}${letter.toUpperCase()}`);
+}
+
+async function refreshSuggestions() {
+  const requestId = ++suggestionsRequestId;
+  if (!suggestionSeedPath) {
+    renderSuggestionsMessage("mdi-vector-polyline", "一覧から曲を選ぶと、ここに次の候補が現れます。");
+    return;
+  }
+  renderSuggestionsMessage("mdi-loading mdi-spin", "候補を探しています…");
+  const toleranceValue = document.getElementById("suggestions-bpm-filter")?.value || "none";
+  try {
+    const results = await invoke("get_similar_tracks", {
+      request: {
+        seedPath: suggestionSeedPath,
+        candidatePaths: getSuggestionScopePaths(),
+        bpmTolerance: toleranceValue === "none" ? null : Number.parseFloat(toleranceValue),
+        allowHalfDouble: document.getElementById("suggestions-half-double")?.checked ?? true,
+        limit: 10
+      }
+    });
+    if (requestId !== suggestionsRequestId) return;
+    renderSuggestionResults(results);
+  } catch (error) {
+    console.error("Failed to load suggestions:", error);
+    renderSuggestionsMessage("mdi-alert-circle-outline", `候補の取得に失敗しました: ${error}`);
+  }
+}
+
+function renderSuggestionResults(results) {
+  const list = document.getElementById("suggestions-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!results.length) {
+    renderSuggestionsMessage(
+      "mdi-waveform",
+      "解析済みの候補がありません。未解析曲を解析するか、BPM条件を広げてください。"
+    );
+    return;
+  }
+  results.forEach((candidate, index) => {
+    const row = document.createElement("div");
+    row.className = "suggestion-item";
+    row.style.animationDelay = `${index * 38}ms`;
+    row.title = candidate.file_path;
+
+    const score = document.createElement("span");
+    score.className = "suggestion-score";
+    score.textContent = `${Math.round(candidate.score * 100)}%`;
+
+    const info = document.createElement("button");
+    info.className = "suggestion-info";
+    const name = candidate.file_path.split(/[\\/]/).pop();
+    const moods = candidate.top_moods.map(item => formatMoodLabel(item.label)).slice(0, 2);
+    const bpm = candidate.bpm ? `${Math.round(candidate.bpm)} BPM` : "BPM —";
+    const delta = Number.isFinite(candidate.bpm_delta)
+      ? ` · ${candidate.bpm_delta >= 0 ? "+" : ""}${Math.round(candidate.bpm_delta)}`
+      : "";
+    info.innerHTML = "<strong></strong><span></span>";
+    info.querySelector("strong").textContent = name;
+    info.querySelector("span").textContent = `${bpm}${delta}${moods.length ? ` · ${moods.join(" / ")}` : ""}`;
+    info.title = `音響 ${Math.round(candidate.embedding_score * 100)} / ムード ${Math.round(candidate.mood_score * 100)}`;
+    info.addEventListener("click", () => {
+      focusAudioFile(candidate.file_path, { updateSuggestionSeed: false });
+      togglePlayAudio(candidate.file_path, candidate.duration_seconds, null, null);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "suggestion-actions";
+    const play = document.createElement("button");
+    play.title = "試聴（基準曲は維持）";
+    play.innerHTML = '<i class="mdi mdi-play"></i>';
+    play.addEventListener("click", () => togglePlayAudio(candidate.file_path, candidate.duration_seconds, null, null));
+    const reseed = document.createElement("button");
+    reseed.title = "この曲を基準にする";
+    reseed.innerHTML = '<i class="mdi mdi-vector-point"></i>';
+    reseed.addEventListener("click", () => setSuggestionSeed(candidate.file_path, { force: true }));
+    const add = document.createElement("button");
+    add.className = "suggestion-add";
+    add.title = "プレイリストへ追加";
+    add.innerHTML = '<i class="mdi mdi-plus"></i>';
+    add.addEventListener("click", () => addPathToPlaylist(candidate.file_path, candidate.duration_seconds));
+    actions.append(play, reseed, add);
+    row.append(score, info, actions);
+    list.appendChild(row);
+  });
+}
+
+async function refreshMusicAnalysisStatus() {
+  const paths = getSuggestionAnalysisPaths();
+  const statusText = document.querySelector("#suggestions-analysis-status > span");
+  const button = document.getElementById("suggestions-analyze-btn");
+  if (!statusText || !button) return;
+  if (!paths.length) {
+    statusText.textContent = "解析できるBGMがありません";
+    button.disabled = true;
+    return;
+  }
+  try {
+    const status = await invoke("get_music_analysis_status", { paths });
+    const skipped = status.skipped ? ` · 対象外 ${status.skipped}` : "";
+    statusText.textContent = `解析済み ${status.analyzed}${skipped} / ${status.total}${status.models_ready ? "" : " · 初回はモデル取得"}`;
+    button.disabled = musicAnalysisRunning || status.pending === 0;
+    button.innerHTML = status.pending
+      ? `<i class="mdi mdi-waveform"></i> 未解析 ${status.pending}曲を解析`
+      : '<i class="mdi mdi-check"></i> 解析済み';
+  } catch (error) {
+    statusText.textContent = `解析状態を取得できません: ${error}`;
+    button.disabled = true;
+  }
+}
+
+async function analyzeSuggestionScope() {
+  const paths = getSuggestionAnalysisPaths();
+  if (!paths.length || musicAnalysisRunning) return;
+  musicAnalysisRunning = true;
+  const button = document.getElementById("suggestions-analyze-btn");
+  const statusText = document.querySelector("#suggestions-analysis-status > span");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.innerHTML = '<i class="mdi mdi-loading mdi-spin"></i> 解析中';
+  if (statusText) statusText.textContent = "解析を開始しています…";
+  try {
+    const result = await invoke("analyze_music_files", { paths });
+    if (result.failed.length) {
+      console.warn("Music analysis failures:", result.failed);
+      alert(`${result.analyzed}曲を解析しました。${result.failed.length}曲は解析できませんでした。`);
+    }
+  } catch (error) {
+    alert(`楽曲解析に失敗しました: ${error}`);
+  } finally {
+    musicAnalysisRunning = false;
+    button.removeAttribute("aria-busy");
+    await refreshMusicAnalysisStatus();
+    await refreshSuggestions();
+  }
+}
+
 function updateInspector(filePath = focusedFilePath) {
   const empty = document.getElementById("inspector-empty");
   const content = document.getElementById("inspector-content");
@@ -1560,6 +1866,9 @@ function renderPlaylistPanel() {
     itemsContainer.innerHTML = '<div class="playlist-empty"><i class="mdi mdi-playlist-music-outline"></i><span>BGMを選択して追加してください</span></div>';
     return;
   }
+  if (!suggestionSeedPath) {
+    setSuggestionSeed(items[items.length - 1].file_path);
+  }
 
   items.forEach((item, index) => {
     const row = document.createElement("div");
@@ -1603,15 +1912,23 @@ function renderPlaylistPanel() {
 }
 
 async function addFocusedToPlaylist() {
-  const playlist = getActivePlaylist();
-  if (!playlist || !focusedFilePath) return;
+  if (!focusedFilePath) return;
   const knownFile = audioFiles.find(file => file.path === focusedFilePath);
+  await addPathToPlaylist(focusedFilePath, knownFile?.duration_seconds ?? null);
+}
+
+async function addPathToPlaylist(filePath, durationSeconds = null) {
+  const playlist = getActivePlaylist();
+  if (!playlist || !filePath) return;
   try {
     playlistStore = await invoke("add_playlist_item", {
       playlistId: playlist.id,
-      filePath: focusedFilePath,
-      durationSeconds: knownFile?.duration_seconds ?? null
+      filePath,
+      durationSeconds
     });
+    suggestionsPinned = false;
+    document.getElementById("suggestions-pin-btn")?.classList.remove("active");
+    setSuggestionSeed(filePath, { force: true });
     renderPlaylistPanel();
   } catch (error) {
     alert(String(error));
@@ -1730,13 +2047,14 @@ async function exportActivePlaylist() {
   }
 }
 
-function focusAudioFile(filePath) {
+function focusAudioFile(filePath, { updateSuggestionSeed = true } = {}) {
   focusedFilePath = filePath;
   document.querySelectorAll(".audio-item.focused").forEach(el => el.classList.remove("focused"));
   const item = Array.from(document.querySelectorAll('.audio-item[data-path]'))
     .find(el => el.dataset.path === filePath);
   item?.classList.add("focused");
   updateInspector(filePath);
+  if (updateSuggestionSeed) setSuggestionSeed(filePath);
 }
 
 function renderLibrarySidebar() {
@@ -2433,6 +2751,7 @@ async function setMasterVolume(volume) {
 window.addEventListener("DOMContentLoaded", () => {
   const savedTheme = localStorage.getItem(THEME_KEY) || "light";
   applyTheme(savedTheme);
+  setupPanelResizing();
   setMasterVolume(Number.isFinite(masterVolume) ? masterVolume : 35);
 
   document.getElementById("select-folder-btn").addEventListener("click", selectFolder);
@@ -2456,6 +2775,29 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("playlist-tab-btn").addEventListener("click", () => showInspectorTab("playlist"));
   document.getElementById("details-tab-btn").addEventListener("click", () => showInspectorTab("details"));
+  const suggestionsDock = document.getElementById("suggestions-dock");
+  const suggestionsScope = document.getElementById("suggestions-scope");
+  suggestionsScope.value = localStorage.getItem(SUGGESTIONS_SCOPE_KEY) || "folder";
+  suggestionsDock.classList.toggle("collapsed", localStorage.getItem(SUGGESTIONS_COLLAPSED_KEY) === "true");
+  document.getElementById("suggestions-collapse-btn").addEventListener("click", () => {
+    const collapsed = suggestionsDock.classList.toggle("collapsed");
+    localStorage.setItem(SUGGESTIONS_COLLAPSED_KEY, String(collapsed));
+  });
+  document.getElementById("suggestions-pin-btn").addEventListener("click", event => {
+    if (!suggestionSeedPath) return;
+    suggestionsPinned = !suggestionsPinned;
+    event.currentTarget.classList.toggle("active", suggestionsPinned);
+    event.currentTarget.title = suggestionsPinned ? "基準曲の固定を解除" : "基準曲を固定";
+    renderSuggestionSeed();
+  });
+  suggestionsScope.addEventListener("change", () => {
+    localStorage.setItem(SUGGESTIONS_SCOPE_KEY, suggestionsScope.value);
+    refreshMusicAnalysisStatus();
+    refreshSuggestions();
+  });
+  document.getElementById("suggestions-bpm-filter").addEventListener("change", refreshSuggestions);
+  document.getElementById("suggestions-half-double").addEventListener("change", refreshSuggestions);
+  document.getElementById("suggestions-analyze-btn").addEventListener("click", analyzeSuggestionScope);
   document.getElementById("playlist-add-focused-btn").addEventListener("click", addFocusedToPlaylist);
   document.getElementById("playlist-export-btn").addEventListener("click", exportActivePlaylist);
   document.getElementById("playlist-select").addEventListener("change", async event => {
@@ -2960,6 +3302,18 @@ window.addEventListener("DOMContentLoaded", () => {
   renderBookmarks();
   getFavoriteFiles();
   loadPlaylists();
+
+  listen("music-analysis-progress", event => {
+    const progress = event.payload;
+    const status = document.querySelector("#suggestions-analysis-status > span");
+    if (!status) return;
+    if (!progress.total) {
+      status.textContent = progress.phase;
+      return;
+    }
+    const name = progress.file_path.split(/[\\/]/).pop();
+    status.textContent = `${progress.phase} ${progress.current}/${progress.total} · ${name}`;
+  });
 
   // 音声再生終了イベントをリッスン
   listen("audio-finished", (event) => {
