@@ -2,7 +2,7 @@ use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, Write as IoWrite};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,7 +14,12 @@ use symphonia::core::probe::Hint;
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
+mod library_store;
 mod music_analysis;
+use library_store::{
+    initialize as initialize_library, library_path, path_is_within, FavoriteItem, LegacyBookmark,
+    LibraryRoot, LibrarySnapshot, LibraryStore,
+};
 use music_analysis::{
     analyze_music_files, get_music_analysis, get_music_analysis_status, get_similar_tracks,
 };
@@ -491,26 +496,6 @@ fn copy_files(files: Vec<String>, destination: String) -> Result<Vec<String>, St
     Ok(copied_files)
 }
 
-// お気に入りファイルのパスを取得
-fn get_favorites_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-
-    // ディレクトリが存在しない場合は作成
-    if !app_data_dir.exists() {
-        fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
-    }
-
-    Ok(app_data_dir.join("favorites.json"))
-}
-
-// 新しいお気に入りアイテムの構造体（タグ対応）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FavoriteItem {
-    pub file_path: String,
-    pub tags: Vec<String>,
-    pub added_at: String,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MissingFavoriteAudit {
     pub root_path: String,
@@ -542,70 +527,8 @@ pub struct MissingSearchResult {
 pub struct RepairApplyResult {
     pub updated_count: usize,
     pub favorites: Vec<FavoriteItem>,
+    pub libraries: Vec<LibraryRoot>,
     pub playlists: PlaylistStore,
-}
-
-// 新しいお気に入り構造体
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct FavoritesV2 {
-    version: u32,
-    items: Vec<FavoriteItem>,
-}
-
-// 旧形式のお気に入り構造体（後方互換性用）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct FavoritesV1 {
-    files: Vec<String>,
-}
-
-impl FavoritesV2 {
-    fn new() -> Self {
-        Self {
-            version: 2,
-            items: Vec::new(),
-        }
-    }
-
-    fn load(path: &Path) -> Result<Self, String> {
-        if !path.exists() {
-            return Ok(Self::new());
-        }
-
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-
-        // まずV2形式として読み込みを試みる
-        if let Ok(v2) = serde_json::from_str::<FavoritesV2>(&content) {
-            if v2.version >= 2 {
-                return Ok(v2);
-            }
-        }
-
-        // V1形式として読み込み、V2に変換
-        if let Ok(v1) = serde_json::from_str::<FavoritesV1>(&content) {
-            let now = chrono_now();
-            let items: Vec<FavoriteItem> = v1
-                .files
-                .into_iter()
-                .map(|file_path| FavoriteItem {
-                    file_path,
-                    tags: Vec::new(),
-                    added_at: now.clone(),
-                })
-                .collect();
-            return Ok(FavoritesV2 { version: 2, items });
-        }
-
-        // どちらの形式でも読み込めない場合は新規作成
-        Ok(Self::new())
-    }
-
-    fn save(&self, path: &Path) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let mut file = File::create(path).map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes())
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
 }
 
 // 現在時刻を取得（ISO 8601形式）
@@ -851,10 +774,113 @@ fn move_playlist_item(
 }
 
 #[tauri::command]
+fn initialize_library_store(
+    legacy_bookmarks: Vec<LegacyBookmark>,
+    app: AppHandle,
+) -> Result<LibrarySnapshot, String> {
+    Ok(initialize_library(&app, legacy_bookmarks)?.snapshot())
+}
+
+fn load_library_store(app: &AppHandle) -> Result<LibraryStore, String> {
+    if library_path(app)?.exists() {
+        LibraryStore::load(app)
+    } else {
+        initialize_library(app, Vec::new())
+    }
+}
+
+#[tauri::command]
+fn get_library_store(app: AppHandle) -> Result<LibrarySnapshot, String> {
+    Ok(load_library_store(&app)?.snapshot())
+}
+
+#[tauri::command]
 fn get_favorites(app: AppHandle) -> Result<Vec<FavoriteItem>, String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let favorites = FavoritesV2::load(&favorites_path)?;
-    Ok(favorites.items)
+    Ok(load_library_store(&app)?.snapshot().favorites)
+}
+
+#[tauri::command]
+fn save_library(
+    root_path: String,
+    alias: Option<String>,
+    app: AppHandle,
+) -> Result<LibrarySnapshot, String> {
+    let mut store = load_library_store(&app)?;
+    store.add_or_save_library(root_path, alias);
+    store.save(&app)?;
+    Ok(store.snapshot())
+}
+
+#[tauri::command]
+fn set_library_saved(
+    root_path: String,
+    is_saved: bool,
+    app: AppHandle,
+) -> Result<LibrarySnapshot, String> {
+    let mut store = load_library_store(&app)?;
+    store.set_library_saved(&root_path, is_saved)?;
+    store.save(&app)?;
+    Ok(store.snapshot())
+}
+
+#[tauri::command]
+fn update_library_alias(
+    root_path: String,
+    alias: Option<String>,
+    app: AppHandle,
+) -> Result<LibrarySnapshot, String> {
+    let mut store = load_library_store(&app)?;
+    store.update_alias(&root_path, alias)?;
+    store.save(&app)?;
+    Ok(store.snapshot())
+}
+
+#[tauri::command]
+fn update_library_media_kind(
+    root_path: String,
+    media_kind: String,
+    app: AppHandle,
+) -> Result<LibrarySnapshot, String> {
+    let mut store = load_library_store(&app)?;
+    store.update_media_kind(&root_path, media_kind)?;
+    store.save(&app)?;
+    Ok(store.snapshot())
+}
+
+fn replace_root_prefix(path: &str, old_root: &str, new_root: &str) -> String {
+    if !path_is_within(path, old_root) {
+        return path.to_string();
+    }
+    let old_len = old_root.trim_end_matches(['\\', '/']).len();
+    let suffix = path[old_len..].trim_start_matches(['\\', '/']);
+    Path::new(new_root)
+        .join(suffix)
+        .to_string_lossy()
+        .to_string()
+}
+
+#[tauri::command]
+fn replace_library_root(
+    old_path: String,
+    new_path: String,
+    app: AppHandle,
+) -> Result<LibrarySnapshot, String> {
+    if !Path::new(&new_path).is_dir() {
+        return Err("新しいライブラリフォルダが存在しません".to_string());
+    }
+    let mut store = load_library_store(&app)?;
+    store.replace_root(&old_path, new_path.clone())?;
+    store.save(&app)?;
+
+    let playlists_path = get_playlists_file_path(&app)?;
+    let mut playlists = PlaylistStore::load(&playlists_path)?;
+    for playlist in &mut playlists.playlists {
+        for item in &mut playlist.items {
+            item.file_path = replace_root_prefix(&item.file_path, &old_path, &new_path);
+        }
+    }
+    playlists.save(&playlists_path)?;
+    Ok(store.snapshot())
 }
 
 fn normalize_path_key(path: &str) -> String {
@@ -863,18 +889,12 @@ fn normalize_path_key(path: &str) -> String {
         .to_lowercase()
 }
 
-fn path_is_within(path: &str, root: &str) -> bool {
-    let path = normalize_path_key(path);
-    let root = normalize_path_key(root);
-    path == root || path.starts_with(&(root + "\\"))
-}
-
 #[tauri::command]
 fn audit_library_root(root_path: String, app: AppHandle) -> Result<MissingFavoriteAudit, String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let favorites = FavoritesV2::load(&favorites_path)?;
-    let missing_items = favorites
-        .items
+    let store = load_library_store(&app)?;
+    let missing_items = store
+        .snapshot()
+        .favorites
         .into_iter()
         .filter(|item| path_is_within(&item.file_path, &root_path))
         .filter(|item| !Path::new(&item.file_path).is_file())
@@ -1042,30 +1062,9 @@ fn apply_path_replacements(
         return Err("置換先に存在しないファイルが含まれています".to_string());
     }
 
-    let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = FavoritesV2::load(&favorites_path)?;
-    let mut updated_count = 0;
-    let mut merged_items: Vec<FavoriteItem> = Vec::new();
-    let mut merged_indices: HashMap<String, usize> = HashMap::new();
-    for mut item in favorites.items {
-        if let Some(new_path) = replacement_map.get(&normalize_path_key(&item.file_path)) {
-            item.file_path = new_path.clone();
-            updated_count += 1;
-        }
-        let key = normalize_path_key(&item.file_path);
-        if let Some(index) = merged_indices.get(&key).copied() {
-            for tag in item.tags {
-                if !merged_items[index].tags.contains(&tag) {
-                    merged_items[index].tags.push(tag);
-                }
-            }
-        } else {
-            merged_indices.insert(key, merged_items.len());
-            merged_items.push(item);
-        }
-    }
-    favorites.items = merged_items;
-    favorites.save(&favorites_path)?;
+    let mut library = load_library_store(&app)?;
+    let updated_count = library.replace_favorite_paths(&replacement_map);
+    library.save(&app)?;
 
     let playlists_path = get_playlists_file_path(&app)?;
     let mut playlists = PlaylistStore::load(&playlists_path)?;
@@ -1084,7 +1083,8 @@ fn apply_path_replacements(
 
     Ok(RepairApplyResult {
         updated_count,
-        favorites: favorites.items,
+        favorites: library.snapshot().favorites,
+        libraries: library.libraries,
         playlists,
     })
 }
@@ -1098,14 +1098,9 @@ fn remove_missing_references(
         .iter()
         .map(|path| normalize_path_key(path))
         .collect();
-    let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = FavoritesV2::load(&favorites_path)?;
-    let before = favorites.items.len();
-    favorites
-        .items
-        .retain(|item| !remove_keys.contains(&normalize_path_key(&item.file_path)));
-    let updated_count = before - favorites.items.len();
-    favorites.save(&favorites_path)?;
+    let mut library = load_library_store(&app)?;
+    let updated_count = library.remove_favorites(&remove_keys);
+    library.save(&app)?;
 
     let playlists_path = get_playlists_file_path(&app)?;
     let mut playlists = PlaylistStore::load(&playlists_path)?;
@@ -1118,7 +1113,8 @@ fn remove_missing_references(
 
     Ok(RepairApplyResult {
         updated_count,
-        favorites: favorites.items,
+        favorites: library.snapshot().favorites,
+        libraries: library.libraries,
         playlists,
     })
 }
@@ -1137,36 +1133,19 @@ fn add_favorite(
     file_path: String,
     tags: Option<Vec<String>>,
     app: AppHandle,
-) -> Result<(), String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = FavoritesV2::load(&favorites_path)?;
-
-    // 既に存在するか確認
-    if !favorites
-        .items
-        .iter()
-        .any(|item| item.file_path == file_path)
-    {
-        favorites.items.push(FavoriteItem {
-            file_path,
-            tags: tags.unwrap_or_default(),
-            added_at: chrono_now(),
-        });
-        favorites.save(&favorites_path)?;
-    }
-
-    Ok(())
+) -> Result<LibrarySnapshot, String> {
+    let mut library = load_library_store(&app)?;
+    library.add_favorite(file_path, tags.unwrap_or_default())?;
+    library.save(&app)?;
+    Ok(library.snapshot())
 }
 
 #[tauri::command]
-fn remove_favorite(file_path: String, app: AppHandle) -> Result<(), String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = FavoritesV2::load(&favorites_path)?;
-
-    favorites.items.retain(|item| item.file_path != file_path);
-    favorites.save(&favorites_path)?;
-
-    Ok(())
+fn remove_favorite(file_path: String, app: AppHandle) -> Result<LibrarySnapshot, String> {
+    let mut library = load_library_store(&app)?;
+    library.remove_favorites(&HashSet::from([normalize_path_key(&file_path)]));
+    library.save(&app)?;
+    Ok(library.snapshot())
 }
 
 #[tauri::command]
@@ -1174,31 +1153,19 @@ fn update_favorite_tags(
     file_path: String,
     tags: Vec<String>,
     app: AppHandle,
-) -> Result<(), String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let mut favorites = FavoritesV2::load(&favorites_path)?;
-
-    if let Some(item) = favorites
-        .items
-        .iter_mut()
-        .find(|item| item.file_path == file_path)
-    {
-        item.tags = tags;
-        favorites.save(&favorites_path)?;
-    } else {
-        return Err("Favorite not found".to_string());
-    }
-
-    Ok(())
+) -> Result<LibrarySnapshot, String> {
+    let mut library = load_library_store(&app)?;
+    library.update_tags(&file_path, tags)?;
+    library.save(&app)?;
+    Ok(library.snapshot())
 }
 
 #[tauri::command]
 fn get_all_tags(app: AppHandle) -> Result<Vec<String>, String> {
-    let favorites_path = get_favorites_file_path(&app)?;
-    let favorites = FavoritesV2::load(&favorites_path)?;
-
-    let mut all_tags: Vec<String> = favorites
-        .items
+    let library = load_library_store(&app)?;
+    let mut all_tags: Vec<String> = library
+        .snapshot()
+        .favorites
         .iter()
         .flat_map(|item| item.tags.clone())
         .collect();
@@ -1277,6 +1244,13 @@ pub fn run() {
             set_master_volume,
             rename_file,
             copy_files,
+            initialize_library_store,
+            get_library_store,
+            save_library,
+            set_library_saved,
+            update_library_alias,
+            update_library_media_kind,
+            replace_library_root,
             get_favorites,
             audit_library_root,
             search_missing_favorites,

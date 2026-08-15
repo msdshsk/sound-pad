@@ -430,6 +430,28 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.library-kind-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-faint);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.library-kind-badge.bgm {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.library-kind-badge.sound_effect {
+  border-color: color-mix(in srgb, var(--favorite) 44%, var(--border));
+  color: var(--favorite);
+}
+
 .context-menu {
   min-width: 190px;
   padding: 4px;
@@ -2417,7 +2439,8 @@ body.panel-resizing-height .suggestions-dock {
 .favorites-filter select,
 .favorites-search input,
 .tag-input-container input,
-.bookmark-rename-input-container input {
+.bookmark-rename-input-container input,
+.bookmark-rename-input-container select {
   background: var(--surface);
   border-color: var(--border);
   color: var(--text);

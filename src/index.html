@@ -38,7 +38,7 @@
             </button>
           </div>
           <div class="sidebar-section">
-            <div class="sidebar-heading compact">保存ビュー</div>
+            <div class="sidebar-heading compact">ライブラリ</div>
             <button id="favorites-screen-btn" class="sidebar-action">
               <i class="mdi mdi-star-outline"></i><span>お気に入り</span><span id="sidebar-favorites-count" class="sidebar-count">0</span>
             </button>
@@ -61,10 +61,10 @@
             </div>
           </div>
           <button id="bookmark-current-btn" class="sidebar-action compact" disabled>
-            <i class="mdi mdi-star-plus-outline"></i><span>現在地を保存</span>
+            <i class="mdi mdi-star-plus-outline"></i><span>ライブラリに追加</span>
           </button>
           <div class="sidebar-footer">
-            <span>Sound Pad</span><span>v2.2.2</span>
+            <span>Sound Pad</span><span>v2.2.3</span>
           </div>
         </aside>
 
@@ -264,7 +264,7 @@
         <div class="drawer-header">
           <h2>
             <i class="mdi mdi-folder-clock"></i>
-            履歴・ブックマーク
+            履歴・ライブラリ
           </h2>
           <button id="drawer-close-btn" class="drawer-close">
             <i class="mdi mdi-close"></i>
@@ -274,10 +274,10 @@
           <div class="drawer-section">
             <h3>
               <i class="mdi mdi-bookmark-multiple"></i>
-              ブックマーク
+              ライブラリ
             </h3>
             <div id="bookmarks-list" class="drawer-list">
-              <p class="empty-message">ブックマークはありません</p>
+              <p class="empty-message">ライブラリはありません</p>
             </div>
           </div>
           <div class="drawer-section">
@@ -319,7 +319,7 @@
             <div class="favorites-filter">
               <i class="mdi mdi-folder"></i>
               <select id="favorites-folder-filter">
-                <option value="">すべてのフォルダ</option>
+                <option value="">ライブラリを選択</option>
               </select>
             </div>
             <div class="favorites-filter">
@@ -477,11 +477,11 @@
       </button>
     </div>
 
-    <!-- ブックマーク用コンテキストメニュー -->
+    <!-- ライブラリ用コンテキストメニュー -->
     <div id="bookmark-context-menu" class="context-menu">
       <button id="bookmark-context-rename" class="context-menu-item">
         <i class="mdi mdi-pencil"></i>
-        別称を変更
+        ライブラリ設定
       </button>
       <button id="bookmark-context-open-explorer" class="context-menu-item">
         <i class="mdi mdi-folder-open"></i>
@@ -490,7 +490,7 @@
       <div class="context-menu-separator"></div>
       <button id="bookmark-context-remove" class="context-menu-item danger">
         <i class="mdi mdi-star-minus-outline"></i>
-        保存フォルダから解除
+        ライブラリ一覧から解除
       </button>
     </div>
 
@@ -498,7 +498,7 @@
     <div id="breadcrumb-context-menu" class="context-menu">
       <button id="breadcrumb-context-bookmark" class="context-menu-item">
         <i class="mdi mdi-star-plus"></i>
-        ブックマークに追加
+        ライブラリに追加
       </button>
       <button id="breadcrumb-context-open-explorer" class="context-menu-item">
         <i class="mdi mdi-folder-open"></i>
@@ -506,13 +506,13 @@
       </button>
     </div>
 
-    <!-- ブックマーク名前変更モーダル -->
+    <!-- ライブラリ設定モーダル -->
     <div id="bookmark-rename-modal" class="modal bookmark-rename-modal">
       <div class="modal-content bookmark-rename-modal-content">
         <div class="modal-header">
           <h2>
             <i class="mdi mdi-pencil"></i>
-            保存フォルダの別称を変更
+            ライブラリ設定
           </h2>
         </div>
         <div class="modal-body">
@@ -523,6 +523,14 @@
           <div class="bookmark-rename-input-container">
             <label for="bookmark-rename-input">表示名（別名）:</label>
             <input type="text" id="bookmark-rename-input" placeholder="空欄でフォルダ名を使用" />
+          </div>
+          <div class="bookmark-rename-input-container">
+            <label for="bookmark-media-kind">素材種別:</label>
+            <select id="bookmark-media-kind">
+              <option value="bgm">BGM</option>
+              <option value="sound_effect">SE</option>
+              <option value="unknown">未分類</option>
+            </select>
           </div>
         </div>
         <div class="modal-footer">

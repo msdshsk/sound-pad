@@ -1601,7 +1601,8 @@ body {
   color: #555;
 }
 
-.bookmark-rename-input-container input {
+.bookmark-rename-input-container input,
+.bookmark-rename-input-container select {
   padding: 10px 12px;
   border: 1px solid #ccc;
   border-radius: 4px;
@@ -1609,7 +1610,8 @@ body {
   transition: border-color 0.15s;
 }
 
-.bookmark-rename-input-container input:focus {
+.bookmark-rename-input-container input:focus,
+.bookmark-rename-input-container select:focus {
   outline: none;
   border-color: #0066cc;
   box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.1);

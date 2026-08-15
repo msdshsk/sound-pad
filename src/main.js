@@ -36,11 +36,12 @@ let suggestionSeedPath = null;
 let suggestionsPinned = false;
 let suggestionsRequestId = 0;
 let musicAnalysisRunning = false;
+let libraryRoots = [];
+let libraryInitialized = false;
 
 // LocalStorage キー
 const HISTORY_KEY = "sound-pad-history";
 const BOOKMARKS_KEY = "sound-pad-bookmarks";
-const BOOKMARKS_RECOVERY_KEY = "sound-pad-bookmarks-recovered-v1";
 const THEME_KEY = "sound-pad-theme";
 const SUGGESTIONS_COLLAPSED_KEY = "sound-pad-suggestions-collapsed";
 const SUGGESTIONS_SCOPE_KEY = "sound-pad-suggestions-scope";
@@ -236,24 +237,73 @@ function addToHistory(path) {
   renderHistory();
 }
 
-// ブックマークを取得（オブジェクト形式に正規化）
-function getBookmarks() {
+// v2までLocalStorageに保存していたフォルダブックマークを移行時だけ読み込む
+function getLegacyBookmarks() {
   const stored = localStorage.getItem(BOOKMARKS_KEY);
   if (!stored) return [];
 
-  const parsed = JSON.parse(stored);
-  // 後方互換性: 文字列の配列の場合はオブジェクト形式に変換
-  return parsed.map(item => {
-    if (typeof item === 'string') {
-      return { path: item, alias: null };
-    }
-    return item;
-  });
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    // 後方互換性: 文字列の配列の場合はオブジェクト形式に変換
+    return parsed
+      .map(item => typeof item === "string" ? { path: item, alias: null } : item)
+      .filter(item => item?.path);
+  } catch (error) {
+    console.warn("旧ライブラリ情報を読み込めませんでした:", error);
+    return [];
+  }
 }
 
-// ブックマークを保存
-function saveBookmarks(bookmarks) {
-  localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(bookmarks));
+// 保存済みライブラリを既存UIのブックマーク形式へ投影する
+function getBookmarks() {
+  return libraryRoots
+    .filter(library => library.is_saved)
+    .map(library => ({
+      id: library.id,
+      path: library.root_path,
+      alias: library.alias || null,
+      media_kind: library.media_kind
+    }));
+}
+
+function getContainingLibrary(path) {
+  return libraryRoots
+    .filter(library => isPathWithinFolder(path, library.root_path))
+    .sort((left, right) => normalizeFilePath(right.root_path).length - normalizeFilePath(left.root_path).length)[0] || null;
+}
+
+function getTagsForLibrary(libraryId) {
+  const tags = new Set();
+  favoriteFiles.forEach(item => {
+    if (!libraryId || item.library_id === libraryId) {
+      item.tags?.forEach(tag => tags.add(tag));
+    }
+  });
+  return Array.from(tags).sort((left, right) => left.localeCompare(right, "ja"));
+}
+
+function getTagsForFile(filePath) {
+  const favorite = favoriteFiles.get(filePath);
+  return favorite?.library_id ? getTagsForLibrary(favorite.library_id) : [];
+}
+
+function getFavoriteModalTags() {
+  const folderPath = document.getElementById("favorites-folder-filter")?.value;
+  const library = folderPath ? getContainingLibrary(folderPath) : null;
+  return library ? getTagsForLibrary(library.id) : [];
+}
+
+function refreshScopedTags() {
+  const activeLibrary = currentFolder ? getContainingLibrary(currentFolder) : null;
+  allTags = activeLibrary ? getTagsForLibrary(activeLibrary.id) : [];
+  selectedTagFilters = new Set(Array.from(selectedTagFilters).filter(tag => allTags.includes(tag)));
+}
+
+function applyLibrarySnapshot(snapshot) {
+  libraryRoots = snapshot?.libraries || [];
+  favoriteFiles = new Map((snapshot?.favorites || []).map(item => [item.file_path, item]));
+  refreshScopedTags();
 }
 
 function normalizeFilePath(path) {
@@ -282,53 +332,31 @@ function getCurrentProjectFolder() {
   return containingBookmark?.path || currentFolder;
 }
 
-function recoverBookmarksFromFavorites() {
-  if (localStorage.getItem(BOOKMARKS_RECOVERY_KEY)) return;
-  const recoveredPaths = new Set();
-  favoriteFiles.forEach(item => {
-    const parent = getParentFolder(item.file_path);
-    const folderName = parent ? getFolderName(parent).toUpperCase() : "";
-    if (folderName === "BGM" || folderName === "SE") recoveredPaths.add(parent);
-  });
-
-  const bookmarks = getBookmarks();
-  recoveredPaths.forEach(path => {
-    if (!bookmarks.some(bookmark => bookmark.path.toLowerCase() === path.toLowerCase())) {
-      bookmarks.push({ path, alias: null });
-    }
-  });
-  saveBookmarks(bookmarks);
-  localStorage.setItem(BOOKMARKS_RECOVERY_KEY, "1");
-  renderBookmarks();
-}
-
-// ブックマークに追加
-function addBookmark(path) {
-  let bookmarks = getBookmarks();
-  if (!bookmarks.some(b => b.path === path)) {
-    bookmarks.push({ path: path, alias: null });
-    saveBookmarks(bookmarks);
+// ライブラリに追加
+async function addBookmark(path) {
+  if (getBookmarks().some(bookmark => normalizeFilePath(bookmark.path) === normalizeFilePath(path))) return;
+  try {
+    applyLibrarySnapshot(await invoke("save_library", { rootPath: path, alias: null }));
     renderBookmarks();
+  } catch (error) {
+    alert(`ライブラリの保存に失敗しました: ${error}`);
   }
 }
 
-// ブックマークから削除
-function removeBookmark(path) {
-  let bookmarks = getBookmarks();
-  bookmarks = bookmarks.filter(b => b.path !== path);
-  saveBookmarks(bookmarks);
-  renderBookmarks();
+// 保存ビューから外す（所属するお気に入りはlibrary.json内に保持）
+async function removeBookmark(path) {
+  try {
+    applyLibrarySnapshot(await invoke("set_library_saved", { rootPath: path, isSaved: false }));
+    renderBookmarks();
+  } catch (error) {
+    alert(`ライブラリの保存解除に失敗しました: ${error}`);
+  }
 }
 
-// ブックマークの別名を更新
-function updateBookmarkAlias(path, alias) {
-  let bookmarks = getBookmarks();
-  const bookmark = bookmarks.find(b => b.path === path);
-  if (bookmark) {
-    bookmark.alias = alias || null;
-    saveBookmarks(bookmarks);
-    renderBookmarks();
-  }
+// ライブラリの別名を更新
+async function updateBookmarkAlias(path, alias) {
+  applyLibrarySnapshot(await invoke("update_library_alias", { rootPath: path, alias: alias || null }));
+  renderBookmarks();
 }
 
 // パスからブックマークの表示名を取得
@@ -339,19 +367,25 @@ function getBookmarkDisplayName(bookmark) {
   return getFolderName(bookmark.path);
 }
 
+function getMediaKindLabel(mediaKind) {
+  if (mediaKind === "bgm") return "BGM";
+  if (mediaKind === "sound_effect") return "SE";
+  return "未分類";
+}
+
 // お気に入りファイルを取得
 async function getFavoriteFiles() {
   try {
-    const favorites = await invoke("get_favorites");
-    favoriteFiles = new Map();
-    favorites.forEach(item => {
-      favoriteFiles.set(item.file_path, item);
-    });
-    recoverBookmarksFromFavorites();
-    // タグ一覧も取得
-    allTags = await invoke("get_all_tags");
+    const snapshot = libraryInitialized
+      ? await invoke("get_library_store")
+      : await invoke("initialize_library_store", { legacyBookmarks: getLegacyBookmarks() });
+    libraryInitialized = true;
+    applyLibrarySnapshot(snapshot);
+    // v3ではライブラリもJSON管理。旧キーは移行完了後に残さない。
+    localStorage.removeItem(BOOKMARKS_KEY);
     // メイン画面のタグフィルターも更新
     updateMainTagFilterOptions();
+    renderBookmarks();
     renderLibrarySidebar();
     refreshMusicAnalysisStatus();
   } catch (error) {
@@ -362,12 +396,8 @@ async function getFavoriteFiles() {
 // お気に入りファイルを追加
 async function addFavorite(filePath, tags = []) {
   try {
-    await invoke("add_favorite", { filePath, tags });
-    favoriteFiles.set(filePath, {
-      file_path: filePath,
-      tags: tags,
-      added_at: Date.now().toString()
-    });
+    applyLibrarySnapshot(await invoke("add_favorite", { filePath, tags }));
+    updateMainTagFilterOptions();
     renderAudioFiles();
     renderLibrarySidebar();
     refreshMusicAnalysisStatus();
@@ -380,8 +410,8 @@ async function addFavorite(filePath, tags = []) {
 // お気に入りファイルを削除
 async function removeFavorite(filePath) {
   try {
-    await invoke("remove_favorite", { filePath });
-    favoriteFiles.delete(filePath);
+    applyLibrarySnapshot(await invoke("remove_favorite", { filePath }));
+    updateMainTagFilterOptions();
     renderAudioFiles();
     renderFavoritesList();
     renderLibrarySidebar();
@@ -395,12 +425,7 @@ async function removeFavorite(filePath) {
 // タグを更新
 async function updateFavoriteTags(filePath, tags) {
   try {
-    await invoke("update_favorite_tags", { filePath, tags });
-    const item = favoriteFiles.get(filePath);
-    if (item) {
-      item.tags = tags;
-    }
-    allTags = await invoke("get_all_tags");
+    applyLibrarySnapshot(await invoke("update_favorite_tags", { filePath, tags }));
     renderFavoritesList();
     updateTagFilterOptions();
     updateMainTagFilterOptions();
@@ -455,7 +480,7 @@ function renderBookmarks() {
     bookmarks.forEach(bookmark => {
       const option = document.createElement("option");
       option.value = bookmark.path;
-      option.textContent = getBookmarkDisplayName(bookmark);
+      option.textContent = `${getBookmarkDisplayName(bookmark)} · ${getMediaKindLabel(bookmark.media_kind)}`;
       option.title = bookmark.path;
       workspaceSelect.appendChild(option);
     });
@@ -464,7 +489,7 @@ function renderBookmarks() {
   renderLibrarySidebar();
 
   if (bookmarks.length === 0) {
-    container.innerHTML = '<p class="empty-message">ブックマークはありません</p>';
+    container.innerHTML = '<p class="empty-message">ライブラリはありません</p>';
     return;
   }
 
@@ -514,6 +539,8 @@ function renderBookmarks() {
 // フォルダを開く
 async function openFolder(path) {
   currentFolder = path;
+  refreshScopedTags();
+  updateMainTagFilterOptions();
   document.getElementById("bookmark-current-btn").disabled = false;
   const sidebarFolder = document.querySelector("#sidebar-current-folder span");
   if (sidebarFolder) {
@@ -574,8 +601,8 @@ function renderRepairModal() {
   const summary = document.getElementById("repair-summary");
   summary.className = `repair-summary ${audit.root_exists ? "warning" : "error"}`;
   summary.innerHTML = audit.root_exists
-    ? `<i class="mdi mdi-alert-outline"></i><div><strong>${unresolved.length + replacements.length}件の参照切れを検出</strong><span>保存フォルダは存在しますが、お気に入りの一部が見つかりません。</span></div>`
-    : `<i class="mdi mdi-folder-alert-outline"></i><div><strong>保存フォルダが見つかりません</strong><span>${audit.root_path}</span></div>`;
+    ? `<i class="mdi mdi-alert-outline"></i><div><strong>${unresolved.length + replacements.length}件の参照切れを検出</strong><span>ライブラリは存在しますが、お気に入りの一部が見つかりません。</span></div>`
+    : `<i class="mdi mdi-folder-alert-outline"></i><div><strong>ライブラリフォルダが見つかりません</strong><span>${audit.root_path}</span></div>`;
 
   const workspace = document.getElementById("repair-workspace");
   workspace.textContent = search?.workspace_path || "未選択";
@@ -617,7 +644,7 @@ function renderRepairModal() {
   if (replacements.length === 0 && unresolved.length === 0) {
     results.innerHTML = audit.root_exists
       ? '<div class="repair-complete"><i class="mdi mdi-check-circle"></i>参照切れは解消されました</div>'
-      : '<div class="repair-root-missing"><i class="mdi mdi-folder-search-outline"></i><strong>保存フォルダの移動先を選択してください</strong><span>お気に入りの参照切れはありません。保存フォルダだけを新しい場所へ差し替えます。</span></div>';
+      : '<div class="repair-root-missing"><i class="mdi mdi-folder-search-outline"></i><strong>ライブラリの移動先を選択してください</strong><span>お気に入りの参照切れはありません。ルートフォルダだけを新しい場所へ差し替えます。</span></div>';
   }
   const canReplaceEmptyRoot = !audit.root_exists && audit.missing_items.length === 0 && search?.suggested_root;
   document.getElementById("repair-apply-btn").disabled = replacements.length === 0 && !canReplaceEmptyRoot;
@@ -653,9 +680,8 @@ async function searchRepairWorkspace() {
 }
 
 async function refreshReferencesAfterRepair(result) {
-  favoriteFiles = new Map(result.favorites.map(item => [item.file_path, item]));
+  applyLibrarySnapshot({ libraries: result.libraries, favorites: result.favorites });
   playlistStore = result.playlists;
-  allTags = await invoke("get_all_tags");
   updateMainTagFilterOptions();
   updateTagFilterOptions();
   renderAudioFiles();
@@ -663,18 +689,8 @@ async function refreshReferencesAfterRepair(result) {
   renderPlaylistPanel();
 }
 
-function replaceBookmarkRoot(oldPath, newPath) {
-  const bookmarks = getBookmarks();
-  const bookmark = bookmarks.find(item => item.path.toLowerCase() === oldPath.toLowerCase());
-  if (!bookmark) return;
-  const existing = bookmarks.find(item => item.path.toLowerCase() === newPath.toLowerCase());
-  if (existing && existing !== bookmark) {
-    if (!existing.alias && bookmark.alias) existing.alias = bookmark.alias;
-    saveBookmarks(bookmarks.filter(item => item !== bookmark));
-  } else {
-    bookmark.path = newPath;
-    saveBookmarks(bookmarks);
-  }
+async function replaceBookmarkRoot(oldPath, newPath) {
+  applyLibrarySnapshot(await invoke("replace_library_root", { oldPath, newPath }));
   renderBookmarks();
 }
 
@@ -683,7 +699,7 @@ async function applyRepairReplacements() {
   if (repairState.search.replacements.length === 0 && !repairState.audit.root_exists && repairState.audit.missing_items.length === 0) {
     const newRoot = repairState.search.suggested_root;
     if (!newRoot) return;
-    replaceBookmarkRoot(repairState.audit.root_path, newRoot);
+    await replaceBookmarkRoot(repairState.audit.root_path, newRoot);
     repairState.audit.root_path = newRoot;
     repairState.audit.root_exists = true;
     await openFolder(newRoot);
@@ -694,8 +710,19 @@ async function applyRepairReplacements() {
   try {
     const oldRoot = repairState.audit.root_path;
     const rootWasMissing = !repairState.audit.root_exists;
+    let replacements = repairState.search.replacements;
+    if (rootWasMissing && repairState.search.suggested_root) {
+      const newRoot = repairState.search.suggested_root;
+      await replaceBookmarkRoot(oldRoot, newRoot);
+      replacements = replacements.map(replacement => ({
+        ...replacement,
+        old_path: `${newRoot.replace(/[\\/]+$/, "")}\\${replacement.old_path.slice(oldRoot.length).replace(/^[\\/]+/, "")}`
+      }));
+      repairState.audit.root_path = newRoot;
+      repairState.audit.root_exists = true;
+    }
     const result = await invoke("apply_path_replacements", {
-      replacements: repairState.search.replacements
+      replacements
     });
     await refreshReferencesAfterRepair(result);
     const unresolvedPaths = new Set(repairState.search.unresolved.map(item => item.old_path));
@@ -703,9 +730,6 @@ async function applyRepairReplacements() {
       .filter(item => unresolvedPaths.has(item.file_path));
     if (rootWasMissing && repairState.search.suggested_root) {
       const newRoot = repairState.search.suggested_root;
-      replaceBookmarkRoot(oldRoot, newRoot);
-      repairState.audit.root_path = newRoot;
-      repairState.audit.root_exists = true;
       await openFolder(newRoot);
     }
     repairState.search = repairState.audit.missing_items.length > 0
@@ -1468,8 +1492,13 @@ function closeDrawer() {
 async function openFavoritesModal() {
   await getFavoriteFiles();
   selectedFavorites.clear(); // 選択状態をリセット
-  updateTagFilterOptions();
   updateFolderFilterOptions();
+  const folderFilter = document.getElementById("favorites-folder-filter");
+  const activeLibrary = currentFolder ? getContainingLibrary(currentFolder) : null;
+  if (activeLibrary?.is_saved && Array.from(folderFilter.options).some(option => option.value === activeLibrary.root_path)) {
+    folderFilter.value = activeLibrary.root_path;
+  }
+  updateTagFilterOptions();
   renderFavoritesList();
   const modal = document.getElementById("favorites-modal");
   modal.classList.add("show");
@@ -1485,14 +1514,19 @@ function closeFavoritesModal() {
 function updateTagFilterOptions() {
   const select = document.getElementById("favorites-tag-filter");
   const currentValue = select.value;
-  select.innerHTML = '<option value="">すべてのタグ</option>';
-  allTags.forEach(tag => {
+  const folderPath = document.getElementById("favorites-folder-filter")?.value;
+  const library = folderPath ? getContainingLibrary(folderPath) : null;
+  const tags = library ? getTagsForLibrary(library.id) : [];
+  select.innerHTML = library
+    ? '<option value="">すべてのタグ</option>'
+    : '<option value="">ライブラリを選択してください</option>';
+  tags.forEach(tag => {
     const option = document.createElement("option");
     option.value = tag;
     option.textContent = tag;
     select.appendChild(option);
   });
-  select.value = currentValue;
+  select.value = tags.includes(currentValue) ? currentValue : "";
 }
 
 // メイン画面のタグフィルターのオプションを更新
@@ -1541,40 +1575,20 @@ function updateMainTagFilterLabel() {
 function updateFolderFilterOptions() {
   const select = document.getElementById("favorites-folder-filter");
   const currentValue = select.value;
-  select.innerHTML = '<option value="">すべてのフォルダ</option>';
+  select.innerHTML = '<option value="">ライブラリを選択</option>';
 
-  const bookmarks = getBookmarks();
-  // お気に入りファイルの親フォルダを取得
-  const favoriteFolders = new Set();
-  favoriteFiles.forEach(item => {
-    const folder = getParentFolder(item.file_path);
-    if (folder) {
-      favoriteFolders.add(folder);
-    }
+  // お気に入りがまだないライブラリも選択できるよう、保存済みをすべて表示する。
+  getBookmarks().forEach(bookmark => {
+    const option = document.createElement("option");
+    option.value = bookmark.path;
+    option.textContent = `${getBookmarkDisplayName(bookmark)} · ${getMediaKindLabel(bookmark.media_kind)}`;
+    option.title = bookmark.path;
+    select.appendChild(option);
   });
 
-  // ブックマークされているフォルダのみを表示
-  bookmarks.forEach(bookmark => {
-    const bookmarkPath = bookmark.path;
-    // ブックマークフォルダに該当するお気に入りファイルがあるかチェック
-    let hasFiles = false;
-    for (const folder of favoriteFolders) {
-      if (folder === bookmarkPath || folder.startsWith(bookmarkPath + "\\") || folder.startsWith(bookmarkPath + "/")) {
-        hasFiles = true;
-        break;
-      }
-    }
-    if (hasFiles) {
-      const option = document.createElement("option");
-      option.value = bookmarkPath;
-      // 別名があれば別名を表示、なければフォルダ名を表示
-      option.textContent = getBookmarkDisplayName(bookmark);
-      option.title = bookmarkPath;
-      select.appendChild(option);
-    }
-  });
-
-  select.value = currentValue;
+  select.value = Array.from(select.options).some(option => option.value === currentValue)
+    ? currentValue
+    : "";
 }
 
 // ファイルパスから親フォルダを取得
@@ -1590,7 +1604,9 @@ function getParentFolder(filePath) {
 function getSuggestionScopePaths() {
   const scope = document.getElementById("suggestions-scope")?.value || "folder";
   if (scope === "favorites") {
-    return Array.from(favoriteFiles.keys());
+    return Array.from(favoriteFiles.values())
+      .filter(item => item.media_kind === "bgm")
+      .map(item => item.file_path);
   }
   return audioFiles
     .filter(file => !file.duration_seconds || file.duration_seconds >= 30)
@@ -1599,7 +1615,11 @@ function getSuggestionScopePaths() {
 
 function getSuggestionAnalysisPaths() {
   const scope = document.getElementById("suggestions-scope")?.value || "folder";
-  if (scope === "favorites") return Array.from(favoriteFiles.keys());
+  if (scope === "favorites") {
+    return Array.from(favoriteFiles.values())
+      .filter(item => item.media_kind === "bgm")
+      .map(item => item.file_path);
+  }
   return audioFiles
     .filter(file => !file.duration_seconds || file.duration_seconds >= 30)
     .map(file => file.path);
@@ -2122,6 +2142,10 @@ function renderLibrarySidebar() {
       const label = document.createElement("span");
       label.textContent = getBookmarkDisplayName(bookmark);
       button.appendChild(label);
+      const kind = document.createElement("small");
+      kind.className = `library-kind-badge ${bookmark.media_kind || "unknown"}`;
+      kind.textContent = getMediaKindLabel(bookmark.media_kind);
+      button.appendChild(kind);
       button.addEventListener("click", () => openBookmarkedFolder(bookmark));
       button.addEventListener("contextmenu", event => {
         event.preventDefault();
@@ -2150,7 +2174,9 @@ function renderLibrarySidebar() {
   }
 
   const tagCounts = new Map();
+  const activeLibrary = currentFolder ? getContainingLibrary(currentFolder) : null;
   favoriteFiles.forEach(item => {
+    if (!activeLibrary || item.library_id !== activeLibrary.id) return;
     item.tags?.forEach(tag => tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1));
   });
   const tagList = document.getElementById("sidebar-tag-list");
@@ -2206,10 +2232,12 @@ function filterFavoriteItems(items, { searchQuery, tagFilter, folderFilter }) {
 }
 
 function getFilteredFavorites() {
+  const folderFilter = document.getElementById("favorites-folder-filter").value;
+  if (!folderFilter) return [];
   return filterFavoriteItems(Array.from(favoriteFiles.values()), {
     searchQuery: document.getElementById("favorites-search-input").value.toLowerCase(),
     tagFilter: document.getElementById("favorites-tag-filter").value,
-    folderFilter: document.getElementById("favorites-folder-filter").value
+    folderFilter
   });
 }
 
@@ -2226,7 +2254,9 @@ function renderFavoritesList() {
   const filteredFavorites = getFilteredFavorites();
 
   if (filteredFavorites.length === 0) {
-    container.innerHTML = '<p class="empty-message">お気に入りはありません</p>';
+    container.innerHTML = document.getElementById("favorites-folder-filter").value
+      ? '<p class="empty-message">このライブラリにお気に入りはありません</p>'
+      : '<p class="empty-message">ライブラリを選択してください</p>';
     updateFavoritesSelectionUI();
     return;
   }
@@ -2431,7 +2461,7 @@ function renderBulkTagSuggestions() {
   const container = document.getElementById("bulk-tag-suggestions-list");
   container.innerHTML = "";
 
-  const availableTags = allTags.filter(tag =>
+  const availableTags = getFavoriteModalTags().filter(tag =>
     !bulkTags.includes(tag) && !bulkExistingTags.includes(tag)
   );
 
@@ -2577,7 +2607,7 @@ function renderTagSuggestions() {
   const container = document.getElementById("tag-suggestions-list");
   container.innerHTML = "";
 
-  const availableTags = allTags.filter(tag => !editingTags.includes(tag));
+  const availableTags = getTagsForFile(editingTagsFilePath).filter(tag => !editingTags.includes(tag));
 
   if (availableTags.length === 0) {
     container.innerHTML = '<span class="no-tags">候補なし</span>';
@@ -2643,6 +2673,7 @@ function showBookmarkContextMenu(x, y, bookmark) {
   const menu = document.getElementById("bookmark-context-menu");
   menu.dataset.path = bookmark.path;
   menu.dataset.alias = bookmark.alias || "";
+  menu.dataset.mediaKind = bookmark.media_kind || "unknown";
   positionContextMenu(menu, x, y);
 }
 
@@ -2653,15 +2684,17 @@ function hideBookmarkContextMenu() {
 }
 
 // ブックマーク名前変更モーダルを表示
-function openBookmarkRenameModal(path, currentAlias) {
+function openBookmarkRenameModal(path, currentAlias, mediaKind = "unknown") {
   const modal = document.getElementById("bookmark-rename-modal");
   const input = document.getElementById("bookmark-rename-input");
   const folderNameLabel = document.getElementById("bookmark-rename-folder-name");
+  const mediaKindSelect = document.getElementById("bookmark-media-kind");
 
   modal.dataset.path = path;
   folderNameLabel.textContent = getFolderName(path);
   input.value = currentAlias || "";
   input.placeholder = getFolderName(path);
+  mediaKindSelect.value = mediaKind;
 
   modal.classList.add("show");
   input.focus();
@@ -2675,14 +2708,21 @@ function closeBookmarkRenameModal() {
 }
 
 // ブックマーク名前変更を保存
-function saveBookmarkRename() {
+async function saveBookmarkRename() {
   const modal = document.getElementById("bookmark-rename-modal");
   const input = document.getElementById("bookmark-rename-input");
   const path = modal.dataset.path;
   const newAlias = input.value.trim();
+  const mediaKind = document.getElementById("bookmark-media-kind").value;
 
-  updateBookmarkAlias(path, newAlias);
-  closeBookmarkRenameModal();
+  try {
+    await updateBookmarkAlias(path, newAlias);
+    applyLibrarySnapshot(await invoke("update_library_media_kind", { rootPath: path, mediaKind }));
+    renderBookmarks();
+    closeBookmarkRenameModal();
+  } catch (error) {
+    alert(`ライブラリ設定の保存に失敗しました: ${error}`);
+  }
 }
 
 // エクスプローラで開く
@@ -2998,7 +3038,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const menu = document.getElementById("bookmark-context-menu");
     const path = menu.dataset.path;
     const alias = menu.dataset.alias;
-    openBookmarkRenameModal(path, alias);
+    openBookmarkRenameModal(path, alias, menu.dataset.mediaKind);
     hideBookmarkContextMenu();
   });
 
@@ -3153,7 +3193,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("favorites-search-input").addEventListener("input", renderFavoritesList);
   document.getElementById("favorites-tag-filter").addEventListener("change", renderFavoritesList);
-  document.getElementById("favorites-folder-filter").addEventListener("change", renderFavoritesList);
+  document.getElementById("favorites-folder-filter").addEventListener("change", () => {
+    updateTagFilterOptions();
+    renderFavoritesList();
+  });
 
   // お気に入り選択・一括タグ付与
   document.getElementById("favorites-select-all-checkbox").addEventListener("change", (e) => {
