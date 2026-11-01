@@ -27,7 +27,7 @@ serde_json = "1"
 # Decoding only, for music analysis (playback is handled by otoiro).
 rodio = { version = "0.21", default-features = false, features = ["symphonia-all"] }
 # Playback engine (decode, output, waveform, scrubbing). Pinned to a commit of msdshsk/otoiro.
-tauri-plugin-otoiro = { git = "https://github.com/msdshsk/otoiro", rev = "ba4c06bf161a17ba1177e0a6510b8df819ed2e5a" }
+tauri-plugin-otoiro = { git = "https://github.com/msdshsk/otoiro", rev = "6b3b8546757d28a551893f6148fb0c2e7b9e95f4" }
 walkdir = "2"
 symphonia = { version = "0.5", features = ["mp3", "wav", "flac", "vorbis", "aac", "isomp4"] }
 realfft = "3.5"

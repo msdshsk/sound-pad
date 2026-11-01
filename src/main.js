@@ -1291,9 +1291,12 @@ async function describeTrack(path) {
   const cover = document.getElementById("player-cover");
   const artCanvas = document.getElementById("player-art-canvas");
   const artist = document.getElementById("player-artist");
+  const jog = document.getElementById("player-jog");
 
   artist.textContent = "";
   seekbar.waveform = null;
+  jog.bpm = null;
+  jog.sections = [];
   artCanvas.getContext("2d").clearRect(0, 0, artCanvas.width, artCanvas.height);
 
   try {
@@ -1301,6 +1304,15 @@ async function describeTrack(path) {
     if (stale()) return;
     if (info.title) document.getElementById("player-filename").textContent = info.title;
     artist.textContent = [info.artist ?? info.albumArtist, info.album].filter(Boolean).join(" · ");
+
+    // ジョグの「拍」: タグのBPMを優先し、無ければ楽曲分析の推定BPMを使う
+    let bpm = info.bpm;
+    if (!bpm) {
+      const analysis = await invoke("get_music_analysis", { path }).catch(() => null);
+      bpm = analysis?.bpm ?? null;
+    }
+    if (stale()) return;
+    jog.bpm = bpm;
 
     const coverBlob = info.coverType ? await getCoverArt(path, info.coverType) : null;
     if (stale()) return;
@@ -1315,6 +1327,7 @@ async function describeTrack(path) {
     const waveform = await getWaveform(path);
     if (stale()) return;
     seekbar.waveform = waveform;
+    jog.sections = waveform.sections.map((section) => section.start);
     if (!playerCoverUrl) {
       const loudness = waveform.rms.reduce((sum, v) => sum + v, 0) / Math.max(1, waveform.rms.length);
       const palette = paletteFromSound(waveform.brightness, loudness * 3, path);
@@ -3276,9 +3289,25 @@ window.addEventListener("DOMContentLoaded", () => {
   const stopBtn = document.getElementById("player-stop-btn");
 
   registerPaletteProperties();
+  const jog = document.getElementById("player-jog");
+  jog.unitLabels = {
+    beat: "1拍",
+    bar: "1小節",
+    bars4: "4小節",
+    section: "セクション",
+    second: "1秒",
+    seconds10: "10秒",
+    frame: "1フレーム",
+    frames10: "10フレーム",
+    seconds: "{s}秒",
+  };
+  const savedJogUnit = localStorage.getItem("sound-pad-jog-unit");
+  if (savedJogUnit) jog.unit = savedJogUnit;
+  jog.addEventListener("oto-jog-unit", (e) => localStorage.setItem("sound-pad-jog-unit", e.detail.unit));
+
   playerReady.then((connected) => {
     document.getElementById("player-seekbar").player = connected;
-    document.getElementById("player-jog").player = connected;
+    jog.player = connected;
 
     connected.on((event) => {
       if (event.type === "snapshot") {

@@ -1,4 +1,4 @@
-// @otoiro/ui — built from https://github.com/msdshsk/otoiro at ba4c06bf161a17ba1177e0a6510b8df819ed2e5a (MIT).
+// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 6b3b8546757d28a551893f6148fb0c2e7b9e95f4 (MIT).
 // Regenerate: in the otoiro repo run `npm run build -w packages/ui` and copy packages/ui/dist/otoiro-ui.js here.
 // ../../node_modules/@tauri-apps/api/external/tslib/tslib.es6.js
 /******************************************************************************
@@ -467,6 +467,52 @@ template$2.innerHTML = `
     background: linear-gradient(90deg, var(--_accent), var(--_accent-2));
     filter: drop-shadow(0 0 6px color-mix(in srgb, var(--_accent) 55%, transparent));
   }
+  .marks { position: absolute; inset: 0; pointer-events: none; }
+  .boundary {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    width: 1px;
+    background: rgb(255 255 255 / 0.28);
+  }
+  .boundary::before {
+    content: "";
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    width: 5px;
+    height: 3px;
+    border-radius: 1px;
+    background: rgb(255 255 255 / 0.55);
+  }
+  .highlight-band {
+    position: absolute;
+    top: 0;
+    height: 3px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--_accent), var(--_accent-2));
+    opacity: 0.85;
+  }
+  .highlight-badge {
+    position: absolute;
+    top: -9px;
+    translate: -50% 0;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--_accent);
+    color: var(--oto-on-accent, var(--oto-base, #111118));
+    font: 700 11px/1 system-ui, sans-serif;
+    box-shadow: 0 0 10px color-mix(in srgb, var(--_accent) 70%, transparent);
+    cursor: pointer;
+    pointer-events: auto;
+    transition: scale 140ms cubic-bezier(.3,1.6,.5,1);
+  }
+  .highlight-badge:hover { scale: 1.2; }
   .playhead {
     position: absolute;
     top: -4px;
@@ -483,6 +529,7 @@ template$2.innerHTML = `
   <div class="layer base"></div>
   <div class="layer hover"></div>
   <div class="layer played"></div>
+  <div class="marks" part="marks"></div>
   <div class="playhead" part="playhead"></div>
 </div>
 <div class="rail" part="rail">
@@ -498,7 +545,9 @@ template$2.innerHTML = `
 * - Hover shows the time under the cursor.
 * - Dragging previews the target (with the offset from the current position) and seeks on
 *   release; Escape cancels.
-* - Keyboard: ←/→ ±5s, Home/End.
+* - Keyboard: ←/→ ±5s, Home/End, PageUp/PageDown previous/next section.
+* - With a waveform that carries `sections`/`highlight`, section boundaries are marked and a
+*   ★ badge jumps to the highlight (chorus).
 *
 * Set `waveform` to switch from a thin rail to a waveform timeline (played part in the accent
 * gradient, hovered part highlighted, glowing playhead).
@@ -517,6 +566,7 @@ var OtoSeekbar = class extends PlayerElement {
 	#waveHover;
 	#wavePlayed;
 	#playhead;
+	#marks;
 	#waveform = null;
 	#maskUrl = null;
 	#maskWidth = 0;
@@ -540,6 +590,7 @@ var OtoSeekbar = class extends PlayerElement {
 		this.#waveHover = root.querySelector(".layer.hover");
 		this.#wavePlayed = root.querySelector(".layer.played");
 		this.#playhead = root.querySelector(".playhead");
+		this.#marks = root.querySelector(".marks");
 		this.tabIndex = 0;
 		this.setAttribute("role", "slider");
 		this.setAttribute("aria-label", "Seek");
@@ -560,6 +611,62 @@ var OtoSeekbar = class extends PlayerElement {
 		this.toggleAttribute("has-waveform", waveform != null);
 		this.#maskWidth = 0;
 		this.#scheduleMask();
+		this.#renderMarks();
+	}
+	/** Section start times (seconds), first one at 0. Empty without waveform data. */
+	get sectionStarts() {
+		return this.#waveform?.sections.map((s) => s.start) ?? [];
+	}
+	/** Seeks to the next section boundary after the current position. */
+	nextSection() {
+		const pos = this.player?.position() ?? 0;
+		const next = this.sectionStarts.find((t) => t > pos + .5);
+		if (next != null) this.player?.seek(next);
+	}
+	/** Seeks to the start of the current section, or the previous one when already near it. */
+	previousSection() {
+		const pos = this.player?.position() ?? 0;
+		const prev = this.sectionStarts.filter((t) => t < pos - 1.5).pop();
+		this.player?.seek(prev ?? 0);
+	}
+	/** Seeks to the estimated chorus / climax. */
+	jumpToHighlight() {
+		const t = this.#waveform?.highlight;
+		if (t != null) this.player?.seek(t);
+	}
+	#renderMarks() {
+		const waveform = this.#waveform;
+		this.#marks.replaceChildren();
+		if (!waveform || waveform.duration <= 0) return;
+		const pct = (t) => `${t / waveform.duration * 100}%`;
+		for (const section of waveform.sections.slice(1)) {
+			const line = document.createElement("div");
+			line.className = "boundary";
+			line.style.left = pct(section.start);
+			this.#marks.append(line);
+		}
+		const highlight = waveform.highlight;
+		if (highlight == null) return;
+		const section = waveform.sections.find((s) => s.start === highlight);
+		if (section) {
+			const band = document.createElement("div");
+			band.className = "highlight-band";
+			band.style.left = pct(section.start);
+			band.style.width = `${(section.end - section.start) / waveform.duration * 100}%`;
+			this.#marks.append(band);
+		}
+		const badge = document.createElement("button");
+		badge.className = "highlight-badge";
+		badge.setAttribute("part", "highlight");
+		badge.textContent = "★";
+		badge.title = "Jump to highlight";
+		badge.style.left = pct(highlight);
+		badge.addEventListener("pointerdown", (e) => e.stopPropagation());
+		badge.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.jumpToHighlight();
+		});
+		this.#marks.append(badge);
 	}
 	connectedCallback() {
 		super.connectedCallback();
@@ -690,6 +797,12 @@ var OtoSeekbar = class extends PlayerElement {
 		if (!player || !duration) return;
 		if (e.key === "Escape" && this.#dragRatio != null) {
 			this.#endDrag();
+			return;
+		}
+		if (e.key === "PageDown" || e.key === "PageUp") {
+			e.preventDefault();
+			if (e.key === "PageDown") this.nextSection();
+			else this.previousSection();
 			return;
 		}
 		const pos = player.position();
@@ -977,6 +1090,37 @@ var PIXELS_PER_NOTCH = 10;
 var WHEEL_PIXELS_PER_NOTCH = 60;
 /** After this long without turning, the next turn starts from the player's position again. */
 var RESYNC_AFTER_MS = 400;
+/** Beat length used when the tempo is unknown. */
+var FALLBACK_BEAT_SECONDS = .5;
+var UNITS = [
+	"beat",
+	"bar",
+	"section",
+	"second",
+	"frame"
+];
+var DEFAULT_LABELS = {
+	beat: "1 beat",
+	bar: "1 bar",
+	bars4: "4 bars",
+	section: "section",
+	second: "1 s",
+	seconds10: "10 s",
+	frame: "1 frame",
+	frames10: "10 frames",
+	seconds: "{s} s"
+};
+/** Dial rotation per notch, so coarser steps also look bigger. */
+var DEGREES = {
+	frame: 6,
+	frames10: 24,
+	beat: 12,
+	second: 12,
+	bar: 30,
+	seconds10: 36,
+	bars4: 60,
+	section: 45
+};
 var ICON_PLAY = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>`;
 var ICON_PAUSE = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>`;
 var template = document.createElement("template");
@@ -1036,6 +1180,25 @@ template.innerHTML = `
     white-space: nowrap;
   }
   :host([turning]) .label { color: rgb(240 246 250 / 0.95); }
+  .unit {
+    position: absolute;
+    left: 50%;
+    bottom: -7px;
+    translate: -50% 0;
+    padding: 2px 7px 2px 8px;
+    border: 1px solid #56616A;
+    border-radius: 999px;
+    background: #0d1012;
+    color: var(--_accent);
+    font: 600 9px/1.3 system-ui, "Segoe UI", "Yu Gothic UI", sans-serif;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgb(0 0 0 / 0.5);
+    transition: border-color 120ms, background 120ms;
+  }
+  .unit::after { content: " ▾"; opacity: 0.6; font-size: 8px; }
+  .unit:hover { border-color: var(--_accent); }
+  :host([modified]) .unit { background: color-mix(in srgb, var(--_accent) 25%, #0d1012); }
 </style>
 <svg class="face" viewBox="0 0 112 112" aria-hidden="true">
   <g class="rotor">
@@ -1053,16 +1216,22 @@ template.innerHTML = `
   <span class="icon"></span>
   <span class="label" part="label">SCRUB</span>
 </button>
+<button class="unit" part="unit"></button>
 `;
 /**
 * `<oto-jog>`: a jog wheel that scrubs the player audibly.
 *
 * - Drag vertically (up = forward, 10 px per notch, remainders carried) or use the wheel.
-* - One notch is one frame at `fps` (default 30); Shift = 10 frames, Ctrl = 1 second.
+* - One notch moves by `unit`: a beat (default; needs `bpm`, otherwise 0.5 s), a bar
+*   (`beats-per-bar`, default 4), a second, or a frame at `fps` (default 30).
+*   Shift goes one step coarser (beat→bar, bar→4 bars, 1 s→10 s, 1→10 frames); Ctrl moves
+*   by a single frame for fine placement.
+* - `section` jumps between `sections` boundaries (and keeps playing if it was).
+* - The chip at the bottom cycles the unit and shows what a notch means right now.
 * - The centre button plays/pauses. Arrow keys turn it when focused.
 *
-* Fires `oto-jog` (`JogTurnDetail`) on every turn. Styling: `--oto-accent`, `--oto-jog-size`,
-* `::part(center|label)`.
+* Fires `oto-jog` (`JogTurnDetail`) on every turn and `oto-jog-unit` (`{ unit }`) when the
+* unit changes. Styling: `--oto-accent`, `--oto-jog-size`, `::part(center|label|unit)`.
 */
 var OtoJog = class extends PlayerElement {
 	#rotor;
@@ -1070,6 +1239,14 @@ var OtoJog = class extends PlayerElement {
 	#icon;
 	#label;
 	#center;
+	#unitChip;
+	#labels = DEFAULT_LABELS;
+	#modifiers = {
+		shift: false,
+		ctrl: false
+	};
+	#shownUnit = "";
+	#sections = [];
 	#angle = 0;
 	#pointerId = null;
 	#lastY = 0;
@@ -1089,6 +1266,9 @@ var OtoJog = class extends PlayerElement {
 		this.#icon = root.querySelector(".icon");
 		this.#label = root.querySelector(".label");
 		this.#center = root.querySelector(".center");
+		this.#unitChip = root.querySelector(".unit");
+		this.#unitChip.addEventListener("pointerdown", (e) => e.stopPropagation());
+		this.#unitChip.addEventListener("click", () => this.cycleUnit());
 		this.tabIndex = 0;
 		this.setAttribute("role", "slider");
 		this.setAttribute("aria-label", "Jog");
@@ -1110,6 +1290,107 @@ var OtoJog = class extends PlayerElement {
 	set fps(value) {
 		this.setAttribute("fps", String(value));
 	}
+	/** Tempo for beat/bar steps; null when unknown (beats fall back to 0.5 s). */
+	get bpm() {
+		const v = Number(this.getAttribute("bpm"));
+		return Number.isFinite(v) && v > 0 ? v : null;
+	}
+	set bpm(value) {
+		if (value != null && value > 0) this.setAttribute("bpm", String(value));
+		else this.removeAttribute("bpm");
+	}
+	get beatsPerBar() {
+		const v = Number(this.getAttribute("beats-per-bar"));
+		return Number.isInteger(v) && v > 0 ? v : 4;
+	}
+	set beatsPerBar(value) {
+		this.setAttribute("beats-per-bar", String(value));
+	}
+	get unit() {
+		const v = this.getAttribute("unit");
+		return v && UNITS.includes(v) ? v : "beat";
+	}
+	set unit(value) {
+		this.setAttribute("unit", value);
+	}
+	/** Overrides the chip texts (e.g. for localisation). */
+	set unitLabels(labels) {
+		this.#labels = {
+			...DEFAULT_LABELS,
+			...labels
+		};
+	}
+	/**
+	* Section start times (seconds) for the `section` unit, e.g. from `WaveformData.sections`.
+	* Without them the section unit falls back to bars.
+	*/
+	set sections(starts) {
+		this.#sections = [...starts].sort((a, b) => a - b);
+	}
+	/** Switches to the next base unit (beat → bar → section → second → frame → beat). */
+	cycleUnit() {
+		this.unit = UNITS[(UNITS.indexOf(this.unit) + 1) % UNITS.length];
+		this.dispatchEvent(new CustomEvent("oto-jog-unit", {
+			detail: { unit: this.unit },
+			bubbles: true
+		}));
+	}
+	connectedCallback() {
+		super.connectedCallback();
+		window.addEventListener("keydown", this.#trackModifiers);
+		window.addEventListener("keyup", this.#trackModifiers);
+		window.addEventListener("blur", this.#clearModifiers);
+	}
+	disconnectedCallback() {
+		super.disconnectedCallback();
+		window.removeEventListener("keydown", this.#trackModifiers);
+		window.removeEventListener("keyup", this.#trackModifiers);
+		window.removeEventListener("blur", this.#clearModifiers);
+	}
+	#trackModifiers = (e) => {
+		this.#modifiers = {
+			shift: e.shiftKey,
+			ctrl: e.ctrlKey
+		};
+	};
+	#clearModifiers = () => {
+		this.#modifiers = {
+			shift: false,
+			ctrl: false
+		};
+	};
+	#resolve({ shift = false, ctrl = false }) {
+		if (ctrl) return "frame";
+		const unit = this.unit === "section" && this.#sections.length < 2 ? "bar" : this.unit;
+		if (!shift) return unit;
+		switch (unit) {
+			case "beat": return "bar";
+			case "bar": return "bars4";
+			case "section": return "section";
+			case "second": return "seconds10";
+			case "frame": return "frames10";
+		}
+	}
+	#seconds(resolved) {
+		const beat = this.bpm ? 60 / this.bpm : FALLBACK_BEAT_SECONDS;
+		switch (resolved) {
+			case "beat": return beat;
+			case "bar": return beat * this.beatsPerBar;
+			case "bars4":
+			case "section": return beat * this.beatsPerBar * 4;
+			case "second": return 1;
+			case "seconds10": return 10;
+			case "frame": return 1 / this.fps;
+			case "frames10": return 10 / this.fps;
+		}
+	}
+	#unitText(resolved) {
+		if ((resolved === "beat" || resolved === "bar" || resolved === "bars4") && !this.bpm) {
+			const s = Math.round(this.#seconds(resolved) * 100) / 100;
+			return this.#labels.seconds.replace("{s}", String(s));
+		}
+		return this.#labels[resolved];
+	}
 	render(now) {
 		const playing = this.player?.state === "playing";
 		if (playing !== this.#shownPlaying) {
@@ -1119,14 +1400,27 @@ var OtoJog = class extends PlayerElement {
 		}
 		const turning = now - this.#lastTurn < 700;
 		this.toggleAttribute("turning", turning);
-		const text = turning && this.#cursor != null ? formatPrecise(this.#cursor) : "SCRUB";
+		const idle = this.bpm ? `${Math.round(this.bpm)} BPM` : "SCRUB";
+		const text = turning && this.#cursor != null ? formatPrecise(this.#cursor) : idle;
 		if (this.#label.textContent !== text) this.#label.textContent = text;
+		const modified = this.#modifiers.shift || this.#modifiers.ctrl;
+		this.toggleAttribute("modified", modified);
+		const unitText = this.#unitText(this.#resolve(this.#modifiers));
+		if (unitText !== this.#shownUnit) {
+			this.#shownUnit = unitText;
+			this.#unitChip.textContent = unitText;
+			this.#unitChip.title = `1 notch = ${unitText}`;
+		}
 	}
 	/** Turns the dial by whole notches, as a drag/wheel/key would. */
 	turn(notches, { shift = false, ctrl = false } = {}) {
 		if (notches === 0) return;
-		const step = ctrl ? 1 : (shift ? 10 : 1) / this.fps;
-		this.#angle = (this.#angle + notches * (ctrl ? 60 : shift ? 36 : 12)) % 360;
+		const resolved = this.#resolve({
+			shift,
+			ctrl
+		});
+		const step = this.#seconds(resolved);
+		this.#angle = (this.#angle + notches * DEGREES[resolved]) % 360;
 		this.#rotor.style.transform = `rotate(${this.#angle}deg)`;
 		this.#glow.animate([{ opacity: .9 }, { opacity: 0 }], {
 			duration: 450,
@@ -1137,9 +1431,17 @@ var OtoJog = class extends PlayerElement {
 		if (this.#cursor == null || now - this.#lastTurn > RESYNC_AFTER_MS) this.#cursor = player?.position() ?? 0;
 		this.#lastTurn = now;
 		const duration = player?.duration ?? Infinity;
-		const delta = notches * step;
-		this.#cursor = Math.min(Math.max(this.#cursor + delta, 0), duration);
-		if (player?.snapshot.path) this.#queueScrub(this.#cursor);
+		const from = this.#cursor;
+		if (resolved === "section") {
+			let target = from;
+			for (let i = 0; i < Math.abs(notches); i++) target = notches > 0 ? this.#sections.find((t) => t > target + .25) ?? duration : this.#sections.filter((t) => t < target - .25).pop() ?? 0;
+			this.#cursor = Math.min(Math.max(target, 0), duration);
+			if (player?.snapshot.path) player.seek(this.#cursor);
+		} else {
+			this.#cursor = Math.min(Math.max(from + notches * step, 0), duration);
+			if (player?.snapshot.path) this.#queueScrub(this.#cursor);
+		}
+		const delta = this.#cursor - from;
 		this.dispatchEvent(new CustomEvent("oto-jog", {
 			detail: {
 				notches,
