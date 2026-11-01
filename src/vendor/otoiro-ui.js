@@ -1,4 +1,4 @@
-// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 64c4278baf8c4fc1d08e6865ac1d2cdd282dba90 (MIT).
+// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 8a795bd35ebf0a4267580ba7944e4b99cd836f68 (MIT).
 // Regenerate: in the otoiro repo run `npm run build -w packages/ui` and copy packages/ui/dist/otoiro-ui.js here.
 // ../../node_modules/@tauri-apps/api/external/tslib/tslib.es6.js
 /******************************************************************************
@@ -1172,8 +1172,12 @@ function drawSoundArt(canvas, waveform, palette) {
 // src/jog.ts
 /** Drag travel for one notch. Small enough to place a single frame by hand. */
 var PIXELS_PER_NOTCH = 10;
-/** Wheel travel (pixel-mode deltas, e.g. touchpads) for one notch. */
-var WHEEL_PIXELS_PER_NOTCH = 60;
+/** Pixel delta of one mouse wheel detent in Chromium at 100 % scaling. */
+var WHEEL_DETENT_PIXELS = 100;
+/** Pixel deltas smaller than this come from a touchpad (or a smooth-scrolling wheel). */
+var WHEEL_TOUCHPAD_MAX_DELTA = 50;
+/** Accumulated touchpad travel for one notch. */
+var WHEEL_TOUCHPAD_PIXELS_PER_NOTCH = 50;
 /** After this long without turning, the next turn starts from the player's position again. */
 var RESYNC_AFTER_MS = 400;
 /** Beat length used when the tempo is unknown. */
@@ -1313,6 +1317,8 @@ template.innerHTML = `
 *   (`beats-per-bar`, default 4), a second, or a frame at `fps` (default 30).
 *   Shift goes one step coarser (beat→bar, bar→4 bars, 1 s→10 s, 1→10 frames); Ctrl moves
 *   by a single frame for fine placement.
+* - While playing, turning moves the playhead and playback continues; while paused, each step
+*   plays a short scrub grain. Set `pause-on-turn` for the deck-style "turning pauses".
 * - `section` jumps between `sections` boundaries (and keeps playing if it was).
 * - The chip at the bottom cycles the unit and shows what a notch means right now.
 * - The centre button plays/pauses. Arrow keys turn it when focused.
@@ -1341,7 +1347,7 @@ var OtoJog = class extends PlayerElement {
 	#wheelCarry = 0;
 	#cursor = null;
 	#lastTurn = 0;
-	#pendingScrub = null;
+	#pendingMove = null;
 	#flushJob = 0;
 	#shownPlaying = null;
 	constructor() {
@@ -1399,6 +1405,16 @@ var OtoJog = class extends PlayerElement {
 	}
 	set unit(value) {
 		this.setAttribute("unit", value);
+	}
+	/**
+	* When set, turning pauses playback and scrubs (deck-style). By default turning while
+	* playing just moves the playhead and keeps playing.
+	*/
+	get pauseOnTurn() {
+		return this.hasAttribute("pause-on-turn");
+	}
+	set pauseOnTurn(value) {
+		this.toggleAttribute("pause-on-turn", value);
 	}
 	/** Overrides the chip texts (e.g. for localisation). */
 	set unitLabels(labels) {
@@ -1526,7 +1542,7 @@ var OtoJog = class extends PlayerElement {
 			if (player?.snapshot.path) player.seek(this.#cursor);
 		} else {
 			this.#cursor = Math.min(Math.max(from + notches * step, 0), duration);
-			if (player?.snapshot.path) this.#queueScrub(this.#cursor);
+			if (player?.snapshot.path) this.#queueMove(this.#cursor);
 		}
 		const delta = this.#cursor - from;
 		this.dispatchEvent(new CustomEvent("oto-jog", {
@@ -1538,15 +1554,22 @@ var OtoJog = class extends PlayerElement {
 			bubbles: true
 		}));
 	}
-	/** At most one scrub per frame; fast drags just move the target further. */
-	#queueScrub(position) {
-		this.#pendingScrub = position;
+	/**
+	* At most one move per frame; fast drags just move the target further. While playing the
+	* move is a seek, so playback carries on from the new position (unless `pause-on-turn`);
+	* otherwise it is a scrub grain, so a paused player can still be heard.
+	*/
+	#queueMove(position) {
+		this.#pendingMove = position;
 		if (this.#flushJob) return;
 		this.#flushJob = requestAnimationFrame(() => {
 			this.#flushJob = 0;
-			const target = this.#pendingScrub;
-			this.#pendingScrub = null;
-			if (target != null) this.player?.scrub(target);
+			const target = this.#pendingMove;
+			this.#pendingMove = null;
+			const player = this.player;
+			if (target == null || !player) return;
+			if (player.state === "playing" && !this.pauseOnTurn) player.seek(target);
+			else player.scrub(target);
 		});
 	}
 	#onPointerDown = (e) => {
@@ -1581,12 +1604,16 @@ var OtoJog = class extends PlayerElement {
 		e.preventDefault();
 		const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
 		let notches;
-		if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
-			this.#wheelCarry += delta / WHEEL_PIXELS_PER_NOTCH;
+		if (e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) notches = Math.sign(delta);
+		else if (Math.abs(delta) >= WHEEL_TOUCHPAD_MAX_DELTA) {
+			this.#wheelCarry = 0;
+			notches = Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / WHEEL_DETENT_PIXELS));
+		} else {
+			if (Math.sign(delta) !== Math.sign(this.#wheelCarry)) this.#wheelCarry = 0;
+			this.#wheelCarry += delta / WHEEL_TOUCHPAD_PIXELS_PER_NOTCH;
 			notches = Math.trunc(this.#wheelCarry);
-			if (notches === 0 && Math.abs(delta) >= WHEEL_PIXELS_PER_NOTCH) notches = Math.sign(delta);
 			this.#wheelCarry -= notches;
-		} else notches = Math.sign(delta);
+		}
 		this.turn(notches, {
 			shift: e.shiftKey,
 			ctrl: e.ctrlKey

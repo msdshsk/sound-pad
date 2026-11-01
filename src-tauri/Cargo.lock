@@ -2876,7 +2876,7 @@ dependencies = [
 [[package]]
 name = "otoiro"
 version = "0.1.0"
-source = "git+https://github.com/msdshsk/otoiro?rev=64c4278baf8c4fc1d08e6865ac1d2cdd282dba90#64c4278baf8c4fc1d08e6865ac1d2cdd282dba90"
+source = "git+https://github.com/msdshsk/otoiro?rev=8a795bd35ebf0a4267580ba7944e4b99cd836f68#8a795bd35ebf0a4267580ba7944e4b99cd836f68"
 dependencies = [
  "cpal",
  "encoding_rs",
@@ -4942,7 +4942,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-otoiro"
 version = "0.1.0"
-source = "git+https://github.com/msdshsk/otoiro?rev=64c4278baf8c4fc1d08e6865ac1d2cdd282dba90#64c4278baf8c4fc1d08e6865ac1d2cdd282dba90"
+source = "git+https://github.com/msdshsk/otoiro?rev=8a795bd35ebf0a4267580ba7944e4b99cd836f68#8a795bd35ebf0a4267580ba7944e4b99cd836f68"
 dependencies = [
  "log",
  "otoiro",
