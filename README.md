@@ -110,7 +110,7 @@ npm run tauri build
 - **フロントエンド**: Vanilla JavaScript, HTML, CSS
 - **バックエンド**: Rust
 - **フレームワーク**: Tauri 2.x
-- **音声再生**: rodio
+- **音声再生**: [Otoiro](https://github.com/msdshsk/otoiro)（再生エンジン・波形シークバー・ジョグダイヤル）。楽曲分析のデコードには rodio を使用
 - **ファイル操作**: std::fs, walkdir
 - **データ永続化**: JSON（ライブラリ・お気に入り・プレイリスト・楽曲分析）とLocalStorage（UI設定・履歴）
 

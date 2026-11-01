@@ -26,7 +26,7 @@
   --player-muted: #9eabb9;
   --shadow: 0 8px 24px rgba(28, 39, 51, 0.09);
   --header-height: 52px;
-  --player-height: 82px;
+  --player-height: 96px;
   --sidebar-width: 220px;
   --inspector-width: 280px;
   --suggestions-height: 360px;
@@ -2579,4 +2579,107 @@ body[data-theme="dark"] .tag-chip {
   .master-volume {
     display: none;
   }
+}
+
+/* Player deck (otoiro): per-track palette, artwork, waveform seekbar and jog wheel.
+   The --oto-* colours are set per track on #player-panel and animate between tracks. */
+.player-panel {
+  --oto-accent: var(--accent);
+  --oto-accent-2: var(--accent-strong);
+  --oto-glow: #22303d;
+  --oto-wave: rgb(255 255 255 / 0.2);
+  --oto-wave-height: 52px;
+  background:
+    radial-gradient(420px 140px at 0% 50%, color-mix(in srgb, var(--oto-glow) 85%, transparent), transparent 70%),
+    linear-gradient(90deg, color-mix(in srgb, var(--oto-glow) 35%, var(--player-bg)), var(--player-bg) 55%);
+  transition: --oto-accent 900ms ease, --oto-accent-2 900ms ease, --oto-base 900ms ease, --oto-glow 900ms ease;
+}
+
+.player-art {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  overflow: visible;
+  background: color-mix(in srgb, var(--oto-glow) 70%, #10161d);
+  box-shadow:
+    0 6px 16px rgb(0 0 0 / 0.35),
+    0 0 22px color-mix(in srgb, var(--oto-accent) 25%, transparent);
+}
+
+.player-art canvas,
+.player-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.player-art .player-status-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  border: 2px solid var(--player-bg);
+  box-sizing: content-box;
+}
+
+.player-panel.has-track .player-status-dot {
+  background: var(--oto-accent);
+  box-shadow: 0 0 8px var(--oto-accent);
+}
+
+.player-label {
+  color: var(--oto-accent);
+  transition: color 900ms ease;
+}
+
+.player-filename {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-artist {
+  color: var(--player-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-artist:empty {
+  display: none;
+}
+
+.player-btn.primary {
+  background: var(--oto-accent);
+  border-color: var(--oto-accent);
+  color: #10161d;
+}
+
+.player-btn.primary:hover:not(:disabled) {
+  background: var(--oto-accent);
+  filter: brightness(1.1);
+}
+
+.player-seekbar-container oto-seekbar {
+  width: 100%;
+}
+
+.master-volume {
+  gap: 12px;
+}
+
+#player-jog {
+  --oto-jog-size: 80px;
+  flex-shrink: 0;
+}
+
+#player-volume {
+  accent-color: var(--oto-accent);
 }

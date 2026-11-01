@@ -1,6 +1,21 @@
 const { invoke } = window.__TAURI__.core;
 const { open, save } = window.__TAURI__.dialog;
 const { listen } = window.__TAURI__.event;
+import {
+  Player,
+  applyPalette,
+  drawSoundArt,
+  getCoverArt,
+  getMediaInfo,
+  getWaveform,
+  paletteFromImage,
+  paletteFromSound,
+  registerPaletteProperties,
+} from "./vendor/otoiro-ui.js";
+
+// Playback engine (otoiro). Commands are fire-and-forget; state comes back as events.
+let player = null;
+const playerReady = Player.connect().then((connected) => (player = connected));
 
 let audioFiles = [];
 let subDirectories = [];
@@ -17,8 +32,9 @@ let selectedTagFilters = new Set();
 let favoritesOnlyFilter = false;
 let favoriteFiles = new Map(); // Map<filePath, FavoriteItem>
 let isListView = localStorage.getItem("sound-pad-view") !== "grid";
-let playbackUpdateInterval = null;
-let playbackUpdateInFlight = false;
+let playbackClockFrame = 0;
+let trackDescribeToken = 0;
+let playerCoverUrl = null;
 let allTags = [];
 let editingTagsFilePath = null;
 let editingTags = [];
@@ -1192,7 +1208,7 @@ async function togglePlayAudio(path, duration, itemElement, buttonElement) {
 
     // 既に再生中の同じファイルをクリックした場合は停止
     if (currentPlayingPath === path) {
-      await invoke("stop_audio");
+      await (await playerReady).stop();
       resetPlayingUI();
       stopPlaybackUpdate();
       return;
@@ -1220,7 +1236,7 @@ async function togglePlayAudio(path, duration, itemElement, buttonElement) {
     }
 
     // 音声を再生
-    await invoke("play_audio", { path });
+    await (await playerReady).load(path, true);
 
     // 新しい再生中の要素を設定
     currentPlayingPath = path;
@@ -1257,16 +1273,57 @@ function updatePlayerPanel(path, duration) {
   document.getElementById("player-duration").textContent = formatDuration(duration);
   document.getElementById("player-current-time").textContent = "0:00";
 
-  const seekbar = document.getElementById("player-seekbar");
-  seekbar.max = duration || 100;
-  seekbar.value = 0;
-
   document.getElementById("player-play-pause-btn").disabled = false;
   document.getElementById("player-stop-btn").disabled = false;
 
   const playPauseBtn = document.getElementById("player-play-pause-btn");
   playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
   document.getElementById("player-panel").classList.add("has-track");
+  describeTrack(path);
+}
+
+// タグ・ジャケット・波形を読み込み、プレイヤーパネルの見た目を曲に合わせる
+async function describeTrack(path) {
+  const token = ++trackDescribeToken;
+  const stale = () => token !== trackDescribeToken;
+  const panel = document.getElementById("player-panel");
+  const seekbar = document.getElementById("player-seekbar");
+  const cover = document.getElementById("player-cover");
+  const artCanvas = document.getElementById("player-art-canvas");
+  const artist = document.getElementById("player-artist");
+
+  artist.textContent = "";
+  seekbar.waveform = null;
+  artCanvas.getContext("2d").clearRect(0, 0, artCanvas.width, artCanvas.height);
+
+  try {
+    const info = await getMediaInfo(path);
+    if (stale()) return;
+    if (info.title) document.getElementById("player-filename").textContent = info.title;
+    artist.textContent = [info.artist ?? info.albumArtist, info.album].filter(Boolean).join(" · ");
+
+    const coverBlob = info.coverType ? await getCoverArt(path, info.coverType) : null;
+    if (stale()) return;
+    if (playerCoverUrl) URL.revokeObjectURL(playerCoverUrl);
+    playerCoverUrl = coverBlob ? URL.createObjectURL(coverBlob) : null;
+    cover.hidden = !playerCoverUrl;
+    if (playerCoverUrl) {
+      cover.src = playerCoverUrl;
+      applyPalette(panel, await paletteFromImage(coverBlob));
+    }
+
+    const waveform = await getWaveform(path);
+    if (stale()) return;
+    seekbar.waveform = waveform;
+    if (!playerCoverUrl) {
+      const loudness = waveform.rms.reduce((sum, v) => sum + v, 0) / Math.max(1, waveform.rms.length);
+      const palette = paletteFromSound(waveform.brightness, loudness * 3, path);
+      applyPalette(panel, palette);
+      drawSoundArt(artCanvas, waveform, palette);
+    }
+  } catch (error) {
+    console.error("Error describing track:", error);
+  }
 }
 
 const TAG_HUES = [6, 28, 45, 88, 145, 178, 205, 222, 258, 292, 326, 348];
@@ -1287,46 +1344,24 @@ function createTagBadge(tag, className = "tag-badge") {
   return badge;
 }
 
-// 再生状態を定期的に更新
+// 経過時間の表示を毎フレーム更新（位置は otoiro の Player がローカルで補間する）
 function startPlaybackUpdate() {
-  stopPlaybackUpdate();
-  playbackUpdateInterval = setInterval(async () => {
-    if (playbackUpdateInFlight) return;
-    playbackUpdateInFlight = true;
-    try {
-      const status = await invoke("get_playback_status");
-      if (status.is_playing || status.is_paused) {
-        document.getElementById("player-current-time").textContent = formatDuration(status.position);
-        const seekbar = document.getElementById("player-seekbar");
-        if (status.duration) {
-          seekbar.max = status.duration;
-        }
-        if (!seekbar.dataset.dragging) {
-          seekbar.value = status.position;
-        }
-
-        const playPauseBtn = document.getElementById("player-play-pause-btn");
-        if (status.is_paused) {
-          playPauseBtn.innerHTML = '<i class="mdi mdi-play"></i>';
-        } else {
-          playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
-        }
-      }
-    } catch (error) {
-      console.error("Error getting playback status:", error);
-    } finally {
-      playbackUpdateInFlight = false;
+  if (playbackClockFrame) return;
+  const timeLabel = document.getElementById("player-current-time");
+  let shown = "";
+  const tick = () => {
+    if (player) {
+      const text = formatDuration(player.position());
+      if (text !== shown) timeLabel.textContent = shown = text;
     }
-  }, 200);
+    playbackClockFrame = requestAnimationFrame(tick);
+  };
+  playbackClockFrame = requestAnimationFrame(tick);
 }
 
-// 再生状態の更新を停止
 function stopPlaybackUpdate() {
-  if (playbackUpdateInterval) {
-    clearInterval(playbackUpdateInterval);
-    playbackUpdateInterval = null;
-  }
-  playbackUpdateInFlight = false;
+  cancelAnimationFrame(playbackClockFrame);
+  playbackClockFrame = 0;
 }
 
 // 再生UIをリセット
@@ -1356,8 +1391,6 @@ function resetPlayingUI() {
     document.getElementById("player-filename").title = lastPlayedPath;
     document.getElementById("player-current-time").textContent = "0:00";
     document.getElementById("player-duration").textContent = formatDuration(lastPlayedDuration);
-    document.getElementById("player-seekbar").value = 0;
-    document.getElementById("player-seekbar").max = lastPlayedDuration || 100;
     document.getElementById("player-play-pause-btn").disabled = false;
     document.getElementById("player-stop-btn").disabled = true;
     document.getElementById("player-play-pause-btn").innerHTML = '<i class="mdi mdi-play"></i>';
@@ -1365,7 +1398,7 @@ function resetPlayingUI() {
     document.getElementById("player-filename").textContent = "再生中のファイルはありません";
     document.getElementById("player-current-time").textContent = "0:00";
     document.getElementById("player-duration").textContent = "0:00";
-    document.getElementById("player-seekbar").value = 0;
+    document.getElementById("player-seekbar").waveform = null;
     document.getElementById("player-play-pause-btn").disabled = true;
     document.getElementById("player-stop-btn").disabled = true;
     document.getElementById("player-play-pause-btn").innerHTML = '<i class="mdi mdi-play"></i>';
@@ -2309,7 +2342,7 @@ function renderFavoritesList() {
     playBtn.title = "再生";
     playBtn.addEventListener("click", async () => {
       try {
-        await invoke("play_audio", { path: item.file_path });
+        await (await playerReady).load(item.file_path, true);
         const knownFile = audioFiles.find(file => file.path === item.file_path);
         const duration = knownFile?.duration_seconds ?? null;
         currentPlayingPath = item.file_path;
@@ -2781,7 +2814,7 @@ async function setMasterVolume(volume) {
   localStorage.setItem("sound-pad-volume", String(masterVolume));
   updateVolumeUI(masterVolume);
   try {
-    await invoke("set_master_volume", { volume: masterVolume / 100 });
+    await (await playerReady).setVolume(masterVolume / 100);
   } catch (error) {
     console.error("Error setting master volume:", error);
   }
@@ -3241,23 +3274,45 @@ window.addEventListener("DOMContentLoaded", () => {
   // プレイヤーパネルのコントロール
   const playPauseBtn = document.getElementById("player-play-pause-btn");
   const stopBtn = document.getElementById("player-stop-btn");
-  const seekbar = document.getElementById("player-seekbar");
+
+  registerPaletteProperties();
+  playerReady.then((connected) => {
+    document.getElementById("player-seekbar").player = connected;
+    document.getElementById("player-jog").player = connected;
+
+    connected.on((event) => {
+      if (event.type === "snapshot") {
+        const playing = event.snapshot.state === "playing";
+        playPauseBtn.innerHTML = playing ? '<i class="mdi mdi-pause"></i>' : '<i class="mdi mdi-play"></i>';
+      } else if (event.type === "ended") {
+        // 再生が終了したファイルのUIを更新
+        if (currentPlayingPath === event.path) {
+          resetPlayingUI();
+          stopPlaybackUpdate();
+        }
+      } else if (event.type === "error") {
+        console.error("Playback error:", event.message);
+        if (currentPlayingPath) {
+          resetPlayingUI();
+          stopPlaybackUpdate();
+        }
+        alert("音声の再生中にエラーが発生しました: " + event.message);
+      }
+    });
+  });
 
   playPauseBtn.addEventListener("click", async () => {
     try {
-      const status = await invoke("get_playback_status");
-      if (status.is_paused) {
-        await invoke("resume_audio");
-        playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
-      } else if (status.is_playing) {
-        await invoke("pause_audio");
-        playPauseBtn.innerHTML = '<i class="mdi mdi-play"></i>';
+      const engine = await playerReady;
+      if (engine.state === "paused") {
+        await engine.play();
+      } else if (engine.state === "playing") {
+        await engine.pause();
       } else if (lastPlayedPath) {
         // 停止状態だが、前回再生したファイルがある場合は再生を開始
-        await invoke("play_audio", { path: lastPlayedPath });
+        await engine.load(lastPlayedPath, true);
         currentPlayingPath = lastPlayedPath;
         currentPlayingDuration = lastPlayedDuration;
-        playPauseBtn.innerHTML = '<i class="mdi mdi-pause"></i>';
         playPauseBtn.disabled = false;
         stopBtn.disabled = false;
         updatePlayerPanel(lastPlayedPath, lastPlayedDuration);
@@ -3283,60 +3338,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   stopBtn.addEventListener("click", async () => {
     try {
-      await invoke("stop_audio");
+      await (await playerReady).stop();
       resetPlayingUI();
       stopPlaybackUpdate();
     } catch (error) {
       console.error("Error stopping audio:", error);
-    }
-  });
-
-  const commitSeek = async () => {
-    if (!currentPlayingPath) return;
-    try {
-      const status = await invoke("get_playback_status");
-      if (!status.is_playing && !status.is_paused) return;
-      const position = Number.parseFloat(seekbar.value);
-      const path = currentPlayingPath;
-      await invoke("seek_audio", { path, position });
-      if (status.is_paused) {
-        await invoke("pause_audio");
-      }
-    } catch (error) {
-      console.error("Error seeking:", error);
-    }
-  };
-
-  seekbar.addEventListener("pointerdown", (e) => {
-    seekbar.dataset.dragging = "true";
-    seekbar.setPointerCapture?.(e.pointerId);
-  });
-
-  seekbar.addEventListener("input", () => {
-    if (seekbar.dataset.dragging) {
-      document.getElementById("player-current-time").textContent = formatDuration(Number.parseFloat(seekbar.value));
-    }
-  });
-
-  seekbar.addEventListener("pointerup", async () => {
-    if (!seekbar.dataset.dragging) return;
-    delete seekbar.dataset.dragging;
-    seekbar.dataset.committedByPointer = "true";
-    setTimeout(() => delete seekbar.dataset.committedByPointer, 0);
-    await commitSeek();
-  });
-
-  seekbar.addEventListener("pointercancel", () => {
-    delete seekbar.dataset.dragging;
-  });
-
-  seekbar.addEventListener("change", async () => {
-    if (seekbar.dataset.committedByPointer) {
-      delete seekbar.dataset.committedByPointer;
-      return;
-    }
-    if (!seekbar.dataset.dragging) {
-      await commitSeek();
     }
   });
 
@@ -3356,16 +3362,5 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     const name = progress.file_path.split(/[\\/]/).pop();
     status.textContent = `${progress.phase} ${progress.current}/${progress.total} · ${name}`;
-  });
-
-  // 音声再生終了イベントをリッスン
-  listen("audio-finished", (event) => {
-    const finishedPath = event.payload;
-
-    // 再生が終了したファイルのUIを更新
-    if (currentPlayingPath === finishedPath) {
-      resetPlayingUI();
-      stopPlaybackUpdate();
-    }
   });
 });

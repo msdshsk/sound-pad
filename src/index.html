@@ -231,10 +231,15 @@
 
       <div id="player-panel" class="player-panel">
         <div class="player-info">
-          <span class="player-status-dot"></span>
+          <div class="player-art">
+            <canvas id="player-art-canvas" width="112" height="112"></canvas>
+            <img id="player-cover" alt="" hidden />
+            <span class="player-status-dot"></span>
+          </div>
           <div class="player-title-group">
             <span class="player-label">NOW PLAYING</span>
             <span id="player-filename" class="player-filename">再生中のファイルはありません</span>
+            <span id="player-artist" class="player-artist"></span>
           </div>
         </div>
         <div class="player-transport">
@@ -244,11 +249,12 @@
           </div>
           <span id="player-current-time" class="player-time">0:00</span>
           <div class="player-seekbar-container">
-            <input type="range" id="player-seekbar" class="player-seekbar" min="0" max="100" value="0" step="0.1" />
+            <oto-seekbar id="player-seekbar"></oto-seekbar>
           </div>
           <span id="player-duration" class="player-time">0:00</span>
         </div>
         <div class="master-volume">
+          <oto-jog id="player-jog" fps="30" title="ジョグ: ドラッグ／ホイールで1フレーム　Shift: 10フレーム　Ctrl: 1秒"></oto-jog>
           <button id="player-mute-btn" class="volume-icon-btn" title="ミュート"><i class="mdi mdi-volume-high"></i></button>
           <div class="volume-control">
             <div class="volume-label"><span>MASTER</span><span id="player-volume-value">35%</span></div>
