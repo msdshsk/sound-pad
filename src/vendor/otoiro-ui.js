@@ -1,4 +1,4 @@
-// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 6b3b8546757d28a551893f6148fb0c2e7b9e95f4 (MIT).
+// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 7cd30f26fc486c04058f71fa846c21275b66c58d (MIT).
 // Regenerate: in the otoiro repo run `npm run build -w packages/ui` and copy packages/ui/dist/otoiro-ui.js here.
 // ../../node_modules/@tauri-apps/api/external/tslib/tslib.es6.js
 /******************************************************************************
@@ -1221,7 +1221,8 @@ template.innerHTML = `
 /**
 * `<oto-jog>`: a jog wheel that scrubs the player audibly.
 *
-* - Drag vertically (up = forward, 10 px per notch, remainders carried) or use the wheel.
+* - Drag vertically (up = forward, 10 px per notch, remainders carried) or use the wheel
+*   (down = forward, like scrolling down a page).
 * - One notch moves by `unit`: a beat (default; needs `bpm`, otherwise 0.5 s), a bar
 *   (`beats-per-bar`, default 4), a second, or a frame at `fps` (default 30).
 *   Shift goes one step coarser (beat→bar, bar→4 bars, 1 s→10 s, 1→10 frames); Ctrl moves
@@ -1492,13 +1493,14 @@ var OtoJog = class extends PlayerElement {
 	};
 	#onWheel = (e) => {
 		e.preventDefault();
+		const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
 		let notches;
 		if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
-			this.#wheelCarry += -e.deltaY / WHEEL_PIXELS_PER_NOTCH;
+			this.#wheelCarry += delta / WHEEL_PIXELS_PER_NOTCH;
 			notches = Math.trunc(this.#wheelCarry);
-			if (notches === 0 && Math.abs(e.deltaY) >= WHEEL_PIXELS_PER_NOTCH) notches = -Math.sign(e.deltaY);
+			if (notches === 0 && Math.abs(delta) >= WHEEL_PIXELS_PER_NOTCH) notches = Math.sign(delta);
 			this.#wheelCarry -= notches;
-		} else notches = -Math.sign(e.deltaY);
+		} else notches = Math.sign(delta);
 		this.turn(notches, {
 			shift: e.shiftKey,
 			ctrl: e.ctrlKey
