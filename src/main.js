@@ -4,6 +4,7 @@ const { listen } = window.__TAURI__.event;
 import {
   Player,
   applyPalette,
+  bindMediaKeys,
   drawSoundArt,
   getCoverArt,
   getMediaInfo,
@@ -3312,6 +3313,8 @@ window.addEventListener("DOMContentLoaded", () => {
   playerReady.then((connected) => {
     document.getElementById("player-seekbar").player = connected;
     jog.player = connected;
+    // スペース（とキーボードのメディアキー）で再生 / 一時停止。入力欄では効かない
+    bindMediaKeys(connected);
 
     connected.on((event) => {
       if (event.type === "snapshot") {

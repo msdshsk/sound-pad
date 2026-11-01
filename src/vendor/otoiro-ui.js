@@ -1,4 +1,4 @@
-// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 7861f66bc25a8179789974f4e10f8aed2492035b (MIT).
+// @otoiro/ui — built from https://github.com/msdshsk/otoiro at 64c4278baf8c4fc1d08e6865ac1d2cdd282dba90 (MIT).
 // Regenerate: in the otoiro repo run `npm run build -w packages/ui` and copy packages/ui/dist/otoiro-ui.js here.
 // ../../node_modules/@tauri-apps/api/external/tslib/tslib.es6.js
 /******************************************************************************
@@ -575,7 +575,7 @@ template$2.innerHTML = `
 * - Hover shows the time under the cursor.
 * - Dragging previews the target (with the offset from the current position) and seeks on
 *   release; Escape cancels.
-* - Keyboard: ←/→ ±5s, Home/End, PageUp/PageDown previous/next section.
+* - Keyboard: Space play/pause, ←/→ ±5s, Home/End, PageUp/PageDown previous/next section.
 * - With waveform analysis, section boundaries are marked, every chorus candidate gets a ★
 *   badge and band, and (unless `showVocals` is off) sung stretches get a line along the
 *   bottom with a ♪ badge at the vocal entry. `markerLabels` sets the tooltips.
@@ -876,6 +876,11 @@ var OtoSeekbar = class extends PlayerElement {
 		const player = this.player;
 		const duration = player?.duration;
 		if (!player || !duration) return;
+		if (e.key === " ") {
+			e.preventDefault();
+			if (!e.repeat) player.toggle();
+			return;
+		}
 		if (e.key === "Escape" && this.#dragRatio != null) {
 			this.#endDrag();
 			return;
@@ -1597,8 +1602,7 @@ var OtoJog = class extends PlayerElement {
 			});
 		} else if (e.key === " " || e.key === "Enter") {
 			e.preventDefault();
-			e.stopPropagation();
-			this.player?.toggle();
+			if (!e.repeat) this.player?.toggle();
 		}
 	};
 };
@@ -1608,4 +1612,67 @@ function formatPrecise(seconds) {
 	return `${formatTime(seconds)}.${String(cs).padStart(2, "0")}`;
 }
 customElements.define("oto-jog", OtoJog);
-export { DEFAULT_PALETTE, OtoJog, OtoSeekbar, OtoTransport, Player, PlayerElement, applyPalette, drawSoundArt, fileName, formatTime, getCoverArt, getMediaInfo, getWaveform, paletteFromImage, paletteFromSound, registerPaletteProperties };
+// src/keys.ts
+var TEXT_INPUT_TYPES = /* @__PURE__ */ new Set([
+	"text",
+	"search",
+	"email",
+	"url",
+	"tel",
+	"password",
+	"number",
+	"date",
+	"datetime-local",
+	"month",
+	"time",
+	"week"
+]);
+/** Elements where Space types or picks something, so it must not be taken over. */
+function isEditable(el) {
+	if (!(el instanceof HTMLElement)) return false;
+	if (el.isContentEditable || el.getAttribute("role") === "textbox") return true;
+	if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
+	return el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type);
+}
+/**
+* App-wide play/pause on Space and the keyboard's media Play/Pause key.
+*
+* Space is left alone in text fields, selects and contenteditable, with Ctrl/Alt/Meta held,
+* and when something already handled the key (`defaultPrevented`, which the Otoiro widgets
+* set). On buttons and checkboxes Space is taken over: otherwise the last clicked button
+* (say, a track's play button) would be pressed again instead of pausing. Enter still
+* activates them.
+*
+* Returns a function that removes the listeners.
+*/
+function bindMediaKeys(player, options = {}) {
+	const target = options.target ?? window;
+	let swallowKeyUp = false;
+	const onKeyDown = (event) => {
+		const e = event;
+		if (e.key === "MediaPlayPause") {
+			e.preventDefault();
+			player.toggle();
+			return;
+		}
+		if (e.code !== "Space" || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+		if (isEditable(e.target) || options.ignore?.(e)) return;
+		e.preventDefault();
+		swallowKeyUp = true;
+		if (!e.repeat && player.snapshot.path) player.toggle();
+	};
+	const onKeyUp = (event) => {
+		const e = event;
+		if (e.code === "Space" && swallowKeyUp) {
+			e.preventDefault();
+			swallowKeyUp = false;
+		}
+	};
+	target.addEventListener("keydown", onKeyDown);
+	target.addEventListener("keyup", onKeyUp);
+	return () => {
+		target.removeEventListener("keydown", onKeyDown);
+		target.removeEventListener("keyup", onKeyUp);
+	};
+}
+export { DEFAULT_PALETTE, OtoJog, OtoSeekbar, OtoTransport, Player, PlayerElement, applyPalette, bindMediaKeys, drawSoundArt, fileName, formatTime, getCoverArt, getMediaInfo, getWaveform, paletteFromImage, paletteFromSound, registerPaletteProperties };
