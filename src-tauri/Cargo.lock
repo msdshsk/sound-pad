@@ -2876,10 +2876,12 @@ dependencies = [
 [[package]]
 name = "otoiro"
 version = "0.1.0"
-source = "git+https://github.com/msdshsk/otoiro?rev=7cd30f26fc486c04058f71fa846c21275b66c58d#7cd30f26fc486c04058f71fa846c21275b66c58d"
+source = "git+https://github.com/msdshsk/otoiro?rev=7861f66bc25a8179789974f4e10f8aed2492035b#7861f66bc25a8179789974f4e10f8aed2492035b"
 dependencies = [
  "cpal",
+ "encoding_rs",
  "log",
+ "realfft",
  "rubato",
  "serde",
  "symphonia 0.6.1",
@@ -4940,7 +4942,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-otoiro"
 version = "0.1.0"
-source = "git+https://github.com/msdshsk/otoiro?rev=7cd30f26fc486c04058f71fa846c21275b66c58d#7cd30f26fc486c04058f71fa846c21275b66c58d"
+source = "git+https://github.com/msdshsk/otoiro?rev=7861f66bc25a8179789974f4e10f8aed2492035b#7861f66bc25a8179789974f4e10f8aed2492035b"
 dependencies = [
  "log",
  "otoiro",

@@ -3301,6 +3301,10 @@ window.addEventListener("DOMContentLoaded", () => {
     frames10: "10フレーム",
     seconds: "{s}秒",
   };
+  document.getElementById("player-seekbar").markerLabels = {
+    chorus: "サビ候補（推定）",
+    vocalStart: "歌いだし（推定）",
+  };
   const savedJogUnit = localStorage.getItem("sound-pad-jog-unit");
   if (savedJogUnit) jog.unit = savedJogUnit;
   jog.addEventListener("oto-jog-unit", (e) => localStorage.setItem("sound-pad-jog-unit", e.detail.unit));
